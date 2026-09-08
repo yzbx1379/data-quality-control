@@ -1024,7 +1024,12 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
         ("隐私明文泄露", "❌" if st["privacy"] else "✅",
          f"{st['privacy']}/{n} 条(§6 全量自动化扫描, 明文即违规)"),
         ("命中类型分布", "✅", hits_desc),
-        ("内网 IP/社交账号", "⚠️", "见 WARN 明细(代码示例误报率高, 人工复核)"),
+        ("内网 IP/社交账号",
+         "⚠️" if (qc._item_cnt.get("疑似内网IP", 0) + qc._item_cnt.get("疑似社交账号", 0)) else "✅",
+         (f"检出 内网 {qc._item_cnt.get('疑似内网IP', 0)} / 社交 {qc._item_cnt.get('疑似社交账号', 0)} 条"
+          "(代码示例语境误报率高, 检出时人工复核)" if qc._item_cnt.get("疑似内网IP", 0)
+          or qc._item_cnt.get("疑似社交账号", 0) else "0 检出(内网 10.x 为 §6 合规替换值; "
+          "变量名 qq/AVX 指令集等算法语境不误报)")),
     ])
     # 七、低质样本过滤记录
     lq_desc = {
