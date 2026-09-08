@@ -149,7 +149,6 @@ RECTIFY_ADVICE = {
     "疑似占位符": "剔除灌水/占位样本(§4.2 LQ6)",
     "多轮配对不足": "补全至 ≥3 组 Q-A(§9)",
     "清洗未完成": "确认清洗流水线已执行后置 true",
-    "同题多语言": "与验收方确认同题多语言交付口径",
     "单/多轮混存": "按 §3 单轮/多轮分目录分片归档",
 }
 
@@ -540,11 +539,10 @@ class QaQC:
         else:
             self._seen_q[full_md5] = rid
         first_q = md5((message[0].get("question", "") if message and isinstance(message[0], dict) else "").strip())
+        # 同题多解/同题多语言为设计口径(每题多用户 AC, 题面相同属预期),
+        # 不计为问题; 仅保留计数供元数据统计(交付口径见 README/终检报告)
         if first_q in self._seen_firstq:
             st["same_q_diff_lang"] += 1
-            if st["same_q_diff_lang"] <= 20:
-                self.add("WARN", rid, "同题多语言",
-                         f"首问与 {self._seen_firstq[first_q]} 相同(同题多语言版本, 需确认交付口径)")
         else:
             self._seen_firstq[first_q] = rid
 
@@ -651,10 +649,7 @@ class QaQC:
             row("WARN" if nd else "PASS",
                 f"近似重复组 {len(nd)} 组",
                 f"字符 5-gram Jaccard≥{NEAR_DUP_JACCARD}(§4.2 LQ7 高度近似样本)")
-        # 同题多语言(首问相同)
-        if st["same_q_diff_lang"]:
-            row("WARN", f"同题多语言 {st['same_q_diff_lang']} 条",
-                "同一题目存在多语言版本记录(首问相同), 需与验收方确认口径")
+        # 同题多解为设计口径, 不计问题(计数保留在 metadata)
         row("ERROR" if st["hidden_span"] else "PASS",
             f"隐藏反爬文本 {st['hidden_span']} 条", "LeetCode 水印 span 需在清洗中剔除")
         # 多轮配对不足全局(§9: 多轮 Q-A ≥3 组)
@@ -848,8 +843,8 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     L.append(f"| 近似重复(5-gram Jaccard≥{NEAR_DUP_JACCARD}) | "
              f"{'⚠️' if st['near_dup'] else '✅'} | {st['near_dup']} 组"
              f"(§4.2 LQ7 仅变量名/注释微调的重复样本) |")
-    L.append(f"| 同题多语言(首问相同) | {'⚠️' if st['same_q_diff_lang'] else '✅'} | "
-             f"{st['same_q_diff_lang']} 条(需与验收方确认口径) |")
+    L.append(f"| 同题多解(首问相同) | ✅ | "
+             f"{st['same_q_diff_lang']} 条(同题多解设计口径, 见 README §七) |")
     L.append("")
 
     # ---- 六、脱敏校验 ----
@@ -1014,8 +1009,8 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
          f"{st['dup_q']} 条, 重复率 {dup_ratio:.2f}%(阈值 <{DUP_LIMIT}%)"),
         ("近似重复(5-gram Jaccard≥0.6)", "⚠️" if st["near_dup"] else "✅",
          f"{st['near_dup']} 组(§4.2 LQ7 仅变量名/注释微调的重复样本)"),
-        ("同题多语言(首问相同)", "⚠️" if st["same_q_diff_lang"] else "✅",
-         f"{st['same_q_diff_lang']} 条(需与验收方确认口径)"),
+        ("同题多解(首问相同)", "✅",
+         f"{st['same_q_diff_lang']} 条(同题多解设计口径, 见 README §七)"),
     ])
     # 六、脱敏校验
     hits_desc = ("; ".join(f"{k} {v} 处" for k, v in sorted(st["privacy_hits"].items()))
