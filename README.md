@@ -67,7 +67,7 @@ python text_dup_precise_qc.py data/*.jsonl
 | `avx512vl` 等 | AVX-512 CPU 指令集（编译指令），非社交账号 |
 | `??????` 串 | 题目要求输出的内容，非灌水占位 |
 | 1-3 行围栏块 | 样例输入输出（` ```text `），非残缺代码 |
-| `for (auto &qq : queries)` | C++ 循环变量名，非 QQ 号 |
+| `for (auto &qq : queries)` | C++ 循环变量名，非 QQ 号（账号串须含数字才检出）|
 
 ## License
 
