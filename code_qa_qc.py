@@ -81,8 +81,9 @@ RE_PLACEHOLDER_RUN = re.compile(r'(?i)x{20,}')   # ? 串为题目要求输出的
 # §6 匿名化清单补充: 银行卡(Luhn)、内网 IP、社交账号
 RE_BANKCARD = re.compile(r'(?<!\d)[3-6]\d{12,18}(?!\d)')
 RE_PRIV_IP = re.compile(
-    r'(?<![\d.])(?:192\.168|172\.(?:1[6-9]|2\d|3[01])|10\.\d{1,3})\.\d{1,3}\.\d{1,3}(?![\d.])')
-RE_SOCIAL_ACCT = re.compile(r'(?<![A-Za-z0-9])(?:微信号|weixin|qq号|qq|vx)\s*[:：]\s*[a-zA-Z0-9_-]{5,}', re.I)
+    r'(?<![\d.])(?:192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![\d.])')
+# 注: 10.x.x.x 为 §6 认可的合规替换值(RFC1918 测试段), 不作为漏脱敏检出
+RE_SOCIAL_ACCT = re.compile(r'(?<![A-Za-z0-9])(?:微信号|weixin|qq号|qq|vx)\s*[:：]\s*(?=[a-zA-Z0-9_-]*\d)[a-zA-Z0-9_-]{5,}', re.I)
 
 # §4.1 低质: 纯文字闲聊(无代码需求/无报错信息)
 CHAT_Q_HINT = ("报错", "error", "exception", "异常", "undefined", "traceback",
@@ -235,7 +236,7 @@ def check_code_syntax(code_text):
     st = {"blocks": 0, "python_checked": 0, "python_fail": 0,
           "bracket_bad": 0, "nolang": 0, "tiny": 0}
     issues = []
-    blocks = re.findall(r'```([A-Za-z0-9+#.\-]*)\n(.*?)```', code_text, re.S)
+    blocks = re.findall(r'^```([A-Za-z0-9+#.\-]*)[ \t]*\n(.*?)^```[ \t]*$', code_text, re.S | re.M)
     for lang, code in blocks:
         st["blocks"] += 1
         lang_l = (lang or "").strip().lower()
@@ -389,6 +390,10 @@ class QaQC:
         full_text = "\n".join(
             f"{t.get('question', '')}\n{t.get('answer', '')}" for t in message
             if isinstance(t, dict))
+        # 语境检测(占位/社交/内网)语义 = 回答里的灌水/泄露 → 范围仅 answer
+        # (question 为官方题面, 样例数据中的 x 串/?? 串/指令集名均为题目内容)
+        answer_text = "\n".join(
+            t.get('answer', '') for t in message if isinstance(t, dict))
 
         # E8 隐藏反爬水印 span
         m = RE_HIDDEN_SPAN.search(full_text)
@@ -462,7 +467,7 @@ class QaQC:
                      f"含私网地址 {ips[0]} 等 {len(ips)} 处(§6 须 x 占位, 代码示例除外)")
 
         # E9c 社交账号(§6: 微信/微博/抖音等)
-        if RE_SOCIAL_ACCT.search(full_text):
+        if RE_SOCIAL_ACCT.search(answer_text):
             self.add("WARN", rid, "疑似社交账号", "含微信号/QQ 号特征串(§6 须 x 占位)")
 
         # E11 非文本资源(§4.1: 图片/二进制/音视频全剔除, 仅留纯文本+代码)
@@ -476,7 +481,7 @@ class QaQC:
             self.add("ERROR", rid, "乱码字符", "含 U+FFFD 替换字符(编码损坏, §4.1 应剔除)")
 
         # W5 占位符串(§4.1 大量占位符类灌水)
-        m = RE_PLACEHOLDER_RUN.search(full_text)
+        m = RE_PLACEHOLDER_RUN.search(answer_text)
         if m:
             st["lq"]["LQ6_占位符乱码模板"] += 1
             self.add("WARN", rid, "疑似占位符", f"含 {m.group(0)[:12]}… 长串占位符(§4.1 剔除灌水样本)")
