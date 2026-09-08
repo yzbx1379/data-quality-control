@@ -859,7 +859,14 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     else:
         hits_desc = "未检出明文隐私"
     L.append(f"| 命中类型分布 | ✅ | {hits_desc} |")
-    L.append(f"| 内网 IP/社交账号 | ⚠️ | 见 WARN 明细(代码示例误报率高, 人工复核) |")
+    _ip_n, _soc_n = (qc._item_cnt.get("疑似内网IP", 0),
+                     qc._item_cnt.get("疑似社交账号", 0))
+    if _ip_n or _soc_n:
+        L.append(f"| 内网 IP/社交账号 | ⚠️ | 检出 内网 {_ip_n} / 社交 {_soc_n} 条"
+                 f"(代码示例语境误报率高, 人工复核) |")
+    else:
+        L.append("| 内网 IP/社交账号 | ✅ | 0 检出(内网 10.x 为 §6 合规替换值; "
+                 "变量名 qq/AVX 指令集等算法语境不误报) |")
     L.append("")
 
     # ---- 七、低质样本过滤记录 ----
