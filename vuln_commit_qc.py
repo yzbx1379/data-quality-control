@@ -768,7 +768,7 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     L.append("")
     L.append("## 一、总体结论")
     L.append("")
-    L.append(f"**{'✅ 达标' if ok else '❌ 不达标(存在 ERROR, 需整改)'}** — 样本 {n} 条, "
+    L.append(f"**{'✅ 代码检测通过, 待人工复检' if ok else '❌ 不达标(存在 ERROR, 需整改)'}** — 样本 {n} 条, "
              f"ERROR {len(qc.error_rows)} 项, WARN {len(qc.warn_rows)} 项")
     L.append("")
 
@@ -865,7 +865,7 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     H.append("<h1>开源项目漏洞修复commit数据集 质检报告</h1>")
     H.append(f"<p>生成时间: {started_at:%Y-%m-%d %H:%M:%S} | 样本: {n} 条 {esc(sample_note)} | "
              f"ERROR: {len(qc.error_rows)} | WARN: {len(qc.warn_rows)}</p>")
-    H.append(f'<p class="badge {"fail" if not ok else "pass"}">{"不达标 — 需整改" if not ok else "达标"}</p>')
+    H.append(f'<p class="badge {"fail" if not ok else "pass"}">{"不达标 — 需整改" if not ok else "代码检测通过, 待人工复检"}</p>')
 
     def dim_html(title, rows):
         H.append(f"<h2>{esc(title)}</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>")

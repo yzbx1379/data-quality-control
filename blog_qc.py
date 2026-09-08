@@ -540,7 +540,7 @@ def write_reports(out_dir, qc, files_meta, started_at, sample_pct=0, sampled_n=0
     L.append("")
     L.append("## 一、总体结论")
     L.append("")
-    L.append(f"**{'✅ 达标' if ok else '❌ 不达标(存在 ERROR, 需整改)'}** — 样本 {n} 条, "
+    L.append(f"**{'✅ 代码检测通过, 待人工复检' if ok else '❌ 不达标(存在 ERROR, 需整改)'}** — 样本 {n} 条, "
              f"ERROR {len(qc.error_rows)} 项, WARN {len(qc.warn_rows)} 项")
     L.append("")
 
@@ -661,7 +661,7 @@ code{background:#f4f4f4;padding:1px 4px}
     H.append(f"<h1>安全技术博客数据集 质检报告</h1>")
     H.append(f"<p>生成时间: {started_at:%Y-%m-%d %H:%M:%S} | 样本: {n} 条 {esc(sample_note)} | "
              f"ERROR: {len(qc.error_rows)} | WARN: {len(qc.warn_rows)}</p>")
-    H.append(f'<p class="badge {"fail" if not ok else "pass"}">{"不达标 — 需整改" if not ok else "达标"}</p>')
+    H.append(f'<p class="badge {"fail" if not ok else "pass"}">{"不达标 — 需整改" if not ok else "代码检测通过, 待人工复检"}</p>')
     dim_html("二、数据完整性", comp)
     dim_html("三、格式规范", fmt)
     H.append("<h2>四、数据来源与权威性</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>")
