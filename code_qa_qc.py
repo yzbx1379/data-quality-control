@@ -959,6 +959,11 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     H.append(f"<p>生成时间: {started_at:%Y-%m-%d %H:%M:%S} | 样本: {n} 条 {esc(sample_note)} | "
              f"ERROR: {qc._err_count} | WARN: {qc._warn_count}</p>")
     H.append(f'<p class="badge {"fail" if not ok else "pass"}">{"不达标 — 需整改" if not ok else "达标"}</p>')
+    H.append("<h2>一、总体结论</h2>")
+    H.append(f"<p><b>{'❌ 不达标(存在 ERROR, 需整改)' if not ok else '✅ 达标'}</b> — "
+             f"样本 {n} 条, ERROR {qc._err_count} 项(记录级 + 全局口径), WARN {qc._warn_count} 项</p>")
+    H.append("<p>合格判定要点: 完全重复率 <0.5% | 脱敏明文 0 | 真实性/混入/低阶模型校验通过 | "
+             "设计口径(单一语言占比/多轮占比/同题多解)说明见 README §七与《终检交付评估报告》</p>")
     H.append("<h2>二、验收硬指标</h2><table><tr><th>结果</th><th>指标</th><th>说明</th></tr>")
     for lvl, item, detail in global_rows:
         mark = {"PASS": "✅", "ERROR": "❌", "WARN": "⚠️", "SKIP": "➖"}[lvl]
