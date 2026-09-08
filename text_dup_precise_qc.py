@@ -30,6 +30,14 @@ UnionFind 与 text_dedup.minhash 的 SEED(纯常量/纯函数, 无 fork 依赖),
       候选召回 → 逐对精确 Jaccard 验证 → 阈值(默认 0.6)以上入组
   L3  组级汇总: 连通分量聚类, 输出每组成员/最大 Jaccard/可省字符数
 
+与主质检脚本内置 near-dup 的分工(为什么两套并存):
+  - code_qa_qc/blog_qc/vuln_commit_qc 内置的近似检测是 5-gram shingles
+    两两对比, 需全量驻留内存 → 仅适合 ≤5000 条的小数据集/分片, 超限自动
+    跳过并在报告标注"➖ 未执行"。定位: 交付质检报告里的例行体检项。
+  - 本脚本用 MinHash+LSH(签名紧凑, 无 5000 上限), 可一条命令跑全量
+    18 万+条, 且支持三个数据集联合检查、博客 base64 载荷剔除、L3 组级
+    聚类。定位: 数据冻结后的专项深度去重(终检), 与分片方案交叉验证。
+
 用法:
     python text_dup_precise_qc.py [blog|qa|commit | jsonl文件 | 目录 ...]
         [--out 目录] [--threshold 0.6] [--ngram 5] [--num-perm 256]
@@ -121,7 +129,7 @@ def read_jsonl(path):
         text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
         raise SystemExit(f"[FATAL] {path} 非 UTF-8 编码: {e}")
-    for line in text.splitlines():
+    for line in text.split("\n"):   # JSONL 按 \n 分行; splitlines 会因 U+2028 等行界符把一条记录拆成多段
         if not line.strip():
             continue
         try:
