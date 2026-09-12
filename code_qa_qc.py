@@ -161,6 +161,18 @@ def looks_like_real_email(v):
         return False
     if local.replace("x", "") == "":      # 全 x 已脱敏占位(如 data@xxx@classes.dex 的 xxx 段)
         return False
+    # 校准(LeetCode 题解误报): 已 Defanging/脱敏的图片文件名, 形如
+    #   RQSA%7BYHRQxxxxx@xxxxxxxx.png
+    # 其中 @ 后的域名是"全 x 占位 + 文件扩展名", 根本不是邮箱。三条特征任一命中即排除:
+    first_label = dom.split(".")[0]
+    if first_label.replace("x", "") == "":   # ① 域名首段全 x = 已脱敏占位
+        return False
+    if "%" in local:                          # ② local 含 % = URL 编码残片(%7B 等)
+        return False
+    if tld in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico",
+               "mp4", "mp3", "wav", "pdf", "zip", "gz", "tar", "7z",
+               "exe", "dll", "so", "dylib", "class", "dex", "apk", "bin"):
+        return False                          # ③ TLD 是文件扩展名 = 文件名/路径片段
     return True
 
 # §4.1 占位符/乱码: U+FFFD 替换字符即编码损坏
@@ -357,6 +369,72 @@ def _closed_blocks_in_field(text):
     return out
 
 
+def _strip_for_brackets(code):
+    """剥离注释与字符串字面量, 仅保留代码骨架用于括号平衡粗检。
+
+    校准: 原实现直接对整块 count(), 把 // 行注释、/* */ 块注释、"..."/'...'
+    字符串内的括号也计入, 造成误报(实测 LeetCode 题解注释 [i+1,n)) 、
+    被注释掉的 //for(int j=0;...){ 、字符字面量 '}' 等)。括号平衡只应对
+    "代码骨架"判定, 注释/字符串里的括号不构成语法结构。
+    单遍状态机: 正常/行注释/块注释/双引号串/单引号串, 处理反斜杠转义。
+    """
+    out = []
+    i, n = 0, len(code)
+    in_line = in_block = in_dq = in_sq = False
+    while i < n:
+        c = code[i]
+        nxt = code[i + 1] if i + 1 < n else ""
+        if in_line:
+            if c == "\n":
+                in_line = False
+                out.append(c)
+            i += 1
+            continue
+        if in_block:
+            if c == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_dq:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_dq = False
+            i += 1
+            continue
+        if in_sq:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_sq = False
+            i += 1
+            continue
+        # 正常态: 识别注释/字符串起点, 其余字符保留
+        if c == "/" and nxt == "/":
+            in_line = True
+            i += 2
+            continue
+        if c == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            continue
+        if c == '"':
+            in_dq = True
+            i += 1
+            continue
+        if c == "'":
+            in_sq = True
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def check_code_syntax(code_fields):
     """抽样代码功能校验(§10): 逐字段提取成对闭合的 fenced 代码块做语法/完整性校验。
 
@@ -398,9 +476,12 @@ def check_code_syntax(code_fields):
                 # (如 appbar.addOnOffsetChangedListener { ... } 截图截断), 非真残缺。
                 if "..." in body or "…" in body or "省略" in body:
                     continue
-                paren_o, paren_c = body.count("("), body.count(")")
-                brack_o, brack_c = body.count("["), body.count("]")
-                brace_o, brace_c = body.count("{"), body.count("}")
+                # 括号平衡只统计"代码骨架"(剥离 // 与 /* */ 注释、字符串/字符字面量),
+                # 否则注释/字符串内的括号被计入 → 误报(实测 LeetCode 题解多例)。
+                skel = _strip_for_brackets(body)
+                paren_o, paren_c = skel.count("("), skel.count(")")
+                brack_o, brack_c = skel.count("["), skel.count("]")
+                brace_o, brace_c = skel.count("{"), skel.count("}")
                 if paren_o != paren_c or brack_o != brack_c or brace_o != brace_c:
                     st["bracket_bad"] += 1
                     issues.append(("代码块括号失衡",
