@@ -211,6 +211,13 @@ TECH_Q_HINT = re.compile(
 #   the-stack/theStack(编程"栈"通用词汇+变量名, 实测 14/14 误报)、
 #   selfoss(冰岛城市名/足球比分, 实测 2/2 误报)、
 #   github.com/datasets / huggingface.co/datasets(用户提问里的正常 URL 引用, 实测 3/3 误报)。
+
+# --- 验收意见"标明 token 计算方式(使用的哪个 tokenizer)"校验(2026-09-15) ---
+# metadata.tokenizer 必须存在且为合法 tokenizer 标识(如 "tiktoken/o200k_base")。
+# 不硬性限定具体 tokenizer(允许 tiktoken/transformers 等各家编码), 但格式须规范:
+#   小写字母/数字/点/下划线/连字符组成, 长度 4-64, 且含至少一个 "/" 或知名前缀, 排除占位垃圾值。
+TOKENIZER_NAME_RE = re.compile(r'^[a-z0-9._/-]{4,64}$')
+TOKENIZER_KNOWN_PREFIX = ("tiktoken/", "transformers/", "huggingface/", "tokenizers/", "cl100k_base", "o200k_base", "p50k_base", "r50k_base", "gpt2", "codebert", "codet5", "unixcoder")
 RE_OSS_DATASET = re.compile(
     r'(?i)\b(?:codealpaca|evol-?instruct|oss-?instruct|coder-?instruct|magicoder'
     r'|stack-?overflow[- ]dump|stack[- ]exchange[- ]dump)\b')
@@ -275,6 +282,7 @@ RECTIFY_ADVICE = {
     "domain非数组": "domain 改为标签数组(SO 数据新口径 §5.2, 2026-09-14 起)",
     "时间字段缺失": "补齐 metadata.question_time/answer_time(SO 数据新口径, 从 SO API/Feed 回填)",
     "token元数据缺失": "补齐 metadata.question_tokens/answer_tokens/tokenizer(tiktoken o200k_base 重算, 2026-09-15 新口径)",
+    "token计算方式未标明": "metadata.tokenizer 须标注真实 tokenizer(如 tiktoken/o200k_base, 2026-09-15 验收意见)",
 }
 
 
@@ -617,14 +625,29 @@ class QaQC:
             self.add("ERROR", rid, "时间字段缺失",
                      f"metadata 缺 {miss_t}(代码问答统一要求保留, 不得删除)")
 
-        # E17 token 元数据必填(2026-09-15 起, 对所有代码问答数据生效):
-        #   metadata.question_tokens / answer_tokens / tokenizer 不可缺失;
+        # E17 token 数值字段必填(2026-09-15 起, 对所有代码问答数据生效):
+        #   metadata.question_tokens / answer_tokens 不可缺失;
         #   token_count 缺失或与拆分不等的记录已有 W1 校验(WARN), 此处仅查"字段存在性"。
-        miss_tok = [k for k in ("question_tokens", "answer_tokens", "tokenizer")
+        miss_tok = [k for k in ("question_tokens", "answer_tokens")
                     if k not in meta or meta.get(k) in (None, "")]
         if miss_tok:
             self.add("ERROR", rid, "token元数据缺失",
                      f"metadata 缺 {miss_tok}(代码问答统一要求保留, 2026-09-15 新口径)")
+
+        # E18 tokenizer 计算方式须标明且合法(2026-09-15 起, 对所有代码问答数据生效):
+        #   验收意见 "后续标明 token 计算方式(使用的哪个 tokenizer)"。
+        #   · metadata.tokenizer 缺失/空 → ERROR;
+        #   · 值不符合合法 tokenizer 标识格式(非 [a-z0-9._/-]、长度<4、无知名前缀/斜杠) → ERROR。
+        tk_v = meta.get("tokenizer")
+        if not tk_v or not str(tk_v).strip():
+            self.add("ERROR", rid, "token计算方式未标明",
+                     "metadata.tokenizer 缺失/为空(须标明使用的 tokenizer, 如 tiktoken/o200k_base)")
+        else:
+            tk_s = str(tk_v).strip().lower()
+            if not (TOKENIZER_NAME_RE.fullmatch(tk_s)
+                    and ("/" in tk_s or tk_s.startswith(TOKENIZER_KNOWN_PREFIX))):
+                self.add("ERROR", rid, "token计算方式未标明",
+                         f"tokenizer={tk_v!r}(非合法 tokenizer 标识, 应如 tiktoken/o200k_base)")
 
         # E5 id 规范
         if not str(rid).startswith(ID_PREFIX):
