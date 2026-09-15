@@ -272,6 +272,9 @@ RECTIFY_ADVICE = {
     "多轮配对不足": "补全至 ≥3 组 Q-A(§9)",
     "清洗未完成": "确认清洗流水线已执行后置 true",
     "单/多轮混存": "按 §3 单轮/多轮分目录分片归档",
+    "domain非数组": "domain 改为标签数组(SO 数据新口径 §5.2, 2026-09-14 起)",
+    "时间字段缺失": "补齐 metadata.question_time/answer_time(SO 数据新口径, 从 SO API/Feed 回填)",
+    "token元数据缺失": "补齐 metadata.question_tokens/answer_tokens/tokenizer(tiktoken o200k_base 重算, 2026-09-15 新口径)",
 }
 
 
@@ -601,6 +604,28 @@ class QaQC:
             self.add("ERROR", rid, "type值错误",
                      f"type={meta.get('type')!r}(应为固定值 {MD_TYPE_FIXED})")
 
+        # E15/E16 代码问答新口径(2026-09-14 起, 对所有代码问答数据生效):
+        #   E15 domain 必须是标签数组; E16 metadata.question_time/answer_time 不可缺失。
+        #   注意: 该口径对所有代码问答数据集统一适用(AtCoder/CodeChef/LeetCode 等
+        #   若 domain 为字符串或无时间字段, 亦按 ERROR 处理, 需随采集整改)。
+        if not isinstance(rec.get("domain"), list):
+            self.add("ERROR", rid, "domain非数组",
+                     f"domain={rec.get('domain')!r}(代码问答统一要求标签数组, 2026-09-14 新口径)")
+        miss_t = [k for k in ("question_time", "answer_time")
+                  if not meta.get(k)]
+        if miss_t:
+            self.add("ERROR", rid, "时间字段缺失",
+                     f"metadata 缺 {miss_t}(代码问答统一要求保留, 不得删除)")
+
+        # E17 token 元数据必填(2026-09-15 起, 对所有代码问答数据生效):
+        #   metadata.question_tokens / answer_tokens / tokenizer 不可缺失;
+        #   token_count 缺失或与拆分不等的记录已有 W1 校验(WARN), 此处仅查"字段存在性"。
+        miss_tok = [k for k in ("question_tokens", "answer_tokens", "tokenizer")
+                    if k not in meta or meta.get(k) in (None, "")]
+        if miss_tok:
+            self.add("ERROR", rid, "token元数据缺失",
+                     f"metadata 缺 {miss_tok}(代码问答统一要求保留, 2026-09-15 新口径)")
+
         # E5 id 规范
         if not str(rid).startswith(ID_PREFIX):
             self.add("ERROR", rid, "id格式", f"应以 {ID_PREFIX} 开头(§7)")
@@ -755,9 +780,22 @@ class QaQC:
             st["lq"]["LQ5_违规内容"] += 1
             self.add("ERROR", rid, "疑似违规内容", f"命中: {hit}(§8)")
 
-        # W1 token_count 偏差
+        # W1 token_count 校验(2026-09-15 起双口径):
+        #   · 新口径(含 question_tokens/answer_tokens 拆分字段, tiktoken 真实计数):
+        #     校验 token_count == question_tokens+answer_tokens 内部一致性;
+        #   · 旧口径(仅 token_count 粗估): 与 est_tokens(4字符≈1 token) 对照偏差>80% 记 WARN。
+        qt = meta.get("question_tokens")
+        at = meta.get("answer_tokens")
         tc = meta.get("token_count")
-        if isinstance(tc, (int, float)) and tc > 0:
+        qtv = isinstance(qt, (int, float)) and qt >= 0
+        atv = isinstance(at, (int, float)) and at >= 0
+        tcv = isinstance(tc, (int, float)) and tc > 0
+        if qtv and atv:
+            st["tokens_sum"] += qt + at
+            if tcv and tc != qt + at:
+                self.add("WARN", rid, "token_count偏差",
+                         f"token_count={tc} != question_tokens+answer_tokens({qt}+{at}={qt + at})")
+        elif tcv:
             est = est_tokens(full_text)
             st["tokens_sum"] += tc
             if abs(tc - est) / max(est, 1) > 0.8:
@@ -832,7 +870,15 @@ class QaQC:
         # 统计
         lang = str(meta.get("primary_language") or "?").lower()
         st["lang"][lang] = st["lang"].get(lang, 0) + 1
-        dom = str(rec.get("domain") or "?").split("/")[0].strip()
+        # domain 兼容两种口径(2026-09-14 起 SO 批改为标签数组):
+        #   · 旧: 字符串 "语言 / 领域" → 取 "/" 前一段
+        #   · 新: 标签数组 → 取**首个标签**作主领域(保证每记录只归一类, 占比合计 ≈100%)
+        dom_raw = rec.get("domain")
+        if isinstance(dom_raw, list):
+            first_tag = str(dom_raw[0]).strip() if dom_raw else ""
+            dom = first_tag or "?"
+        else:
+            dom = str(dom_raw or "?").split("/")[0].strip()
         st["domain"][dom] = st["domain"].get(dom, 0) + 1
 
     # ---- 近似重复检测(§4.2 LQ7) ----
@@ -1204,7 +1250,7 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
 
     # ---- 附录: 分布 ----
     for title, key in (("附录A、编程语言分布(§5.1 单一语言 ≤30%)", "lang"),
-                       ("附录B、技术领域分布(§5.2)", "domain")):
+                       ("附录B、技术领域分布(§5.2; domain 为标签数组时取首个标签作主领域)", "domain")):
         L.append(f"## {title}")
         L.append("")
         L.append("| 类别 | 记录数 | 占比 |")
