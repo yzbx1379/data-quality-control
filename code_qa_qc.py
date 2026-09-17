@@ -94,9 +94,36 @@ def has_non_text_resource(text):
                 or RE_BLOB_REF.search(t) or RE_BASE64_EMBED.search(t))
 
 # §6 隐私: 邮箱/手机号/身份证(代码块外正文里检测; 代码示例含的测试值/版本串豁免)
+# 数学表达式豁免(2026-09-16, AtCoder 补采实测 3 例误报):
+#   题面 $...$ 内的**数学常数**被 RE_PHONE 误判为手机号 ——
+#   abc008_3  期望值 $13/6 = 2.16666666666...$ (小数部分 16666666666)
+#   arc016_3  期望值 $9343.17042606516$
+#   arc224_a  $16970154001\ (= 998244353 \times 17)$
+# 数学表达式是题面内容不是联系方式, 属 §6"代码示例"同源的豁免范畴;
+# 该豁免**只会减少误报**, 对既有已交付批次(ERROR 0)无影响。
+RE_MATH_SPAN = re.compile(r'\$[^$\n]{1,400}\$')
+# 样例段豁免(2026-09-17 Codeforces 实测 9 例误报):
+#   【样例】段是题目的**测试数据**(输入/输出), 由大整数构成, 与联系方式无关, 但会被 RE_PHONE 命中:
+#     1764F  样例数列含 15069617722
+#     1856B  样例输入 "... 13618343152 819343431 1000000000"
+#     2189D1 样例输出 "-1-14966412-13368925282"
+#   与 RE_MATH_SPAN 同属"题面内容非联系方式"豁免范畴; 只会减少误报。
+#   ⚠️ 仅匹配采集器自带的【样例】标记段, SO/SE 批无此标记 → 对其零影响。
+RE_SAMPLE_SPAN = re.compile(r'【样例】.*?(?=【|\Z)', re.S)
 RE_EMAIL = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+')
 RE_PHONE = re.compile(r'(?<![0-9a-fA-F])1[3-9]\d{9}(?![0-9a-fA-F])')
 RE_IDCARD = re.compile(r'(?<![0-9Xx])\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:[0-2]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])')
+# 时间戳/版本号语境豁免(2026-09-17 SE 合并批实测 1 例误报):
+#   sharepoint#57874 正文 "This adds to the script url something like `?rev=634946193703232026`"
+#   —— 18 位数字恰好落进身份证正则(前 6 位 634946 + 1937 年 + 03 月 + 23 日 + 202 序列 + 6),
+#   但实为 SharePoint 的 AssemblyTimeStamp(时间戳), 属**代码/标识符语境非身份信息**。
+#   判据: 该数字串前面紧跟 rev=/ver=/version=/ts=/timestamp=/build=/release= 等**版本/时间戳键名**,
+#   或整串被引号包裹(`"634946193703232026"`)。
+#   (⚠️ 刻意**不含 `id=` 与裸 `=`**: 其后的 18 位更可能是真实证件号, 不能豁免)
+#   ⇒ 与 RE_MATH_SPAN / RE_SAMPLE_SPAN 同属"代码示例"豁免范畴, 只会减少误报。
+RE_TS_CTX = re.compile(
+    r'(?:\b(?:rev|ver|version|ts|timestamp|build|release)\s*[=:]\s*\d{15,19}(?![0-9])'
+    r'|["\']\d{15,19}(?![0-9])["\'])', re.I)
 
 
 def strip_fenced(text):
@@ -707,6 +734,10 @@ class QaQC:
         # 银行卡 Luhn 对代码数据里随机数字串(FileID/hex/serialVersionUID)误报 100%,
         # 无告警价值, 仅统计保留命中数。
         prose_text = strip_fenced(full_text)
+        # 数学表达式豁免(见 RE_MATH_SPAN 注释): $...$ 内是题面数学内容
+        prose_text = RE_MATH_SPAN.sub(" ", prose_text)
+        # 样例段豁免(见 RE_SAMPLE_SPAN 注释): 【样例】内是题目测试数据
+        prose_text = RE_SAMPLE_SPAN.sub(" ", prose_text)
         priv = []
         for em in RE_EMAIL.finditer(prose_text):
             v = em.group(0)
@@ -723,7 +754,9 @@ class QaQC:
         if RE_PHONE.search(prose_text):
             priv.append("手机号")
             st["privacy_hits"]["手机号"] = st["privacy_hits"].get("手机号", 0) + 1
-        if RE_IDCARD.search(prose_text):
+        # 时间戳语境豁免(见 RE_TS_CTX 注释): rev=/id=/version= 后的长数字是标识符非身份证
+        _prose_idc = RE_TS_CTX.sub(" ", prose_text)
+        if RE_IDCARD.search(_prose_idc):
             priv.append("身份证")
             st["privacy_hits"]["身份证"] = st["privacy_hits"].get("身份证", 0) + 1
         if priv:
@@ -1420,7 +1453,7 @@ def main():
     ap.add_argument("paths", nargs="*", help="jsonl 文件或目录")
     ap.add_argument("--out", default=None, help="报告输出目录, 默认 ./qc_reports/")
     ap.add_argument("--sample", type=float, default=0, metavar="PCT",
-                    help="随机抽样百分比(如 1 = 抽 1%%, §9 质检抽检要求 ≥1%%); 0=全量。seed 见 --seed")
+                    help="随机抽样百分比(如 1 表示抽 1%%, \u00a79 质检抽检要求不低于 1%%); 0=全量。seed 见 --seed")
     ap.add_argument("--seed", type=int, default=2026, metavar="N",
                     help="抽样随机种子(默认 2026)。多轮独立抽检时用不同 seed 抽不同子集")
     ap.add_argument("--prev", default=None, metavar="MD",
@@ -1430,7 +1463,7 @@ def main():
                          "避免 5-gram shingles 集合占用大量内存; 全量近似查重请用 text_dup_precise_qc.py")
     ap.add_argument("--exempt-multi-turn", action="store_true",
                     help="构造性单轮数据集(如 SO 无多轮场景)豁免多轮占比: "
-                         "多轮 0% 单列为 WARN 不触发整体退回(需换源补采, 见 README 口径说明)")
+                         "多轮 0%% 单列为 WARN 不触发整体退回(需换源补采, 见 README 口径说明)")
     args = ap.parse_args()
 
     base = os.path.dirname(os.path.abspath(__file__))
