@@ -39,12 +39,14 @@
 
 import argparse
 import ast
+import collections
 import datetime
 import glob
 import hashlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 
@@ -131,6 +133,406 @@ def strip_fenced(text):
     return RE_FENCED.sub('', text or '')
 
 
+# ----------------------------------------------------------------------------
+# E9 隐私误报消除(2026-09-19 SO v6 全量 1,563,510 条数据锚定: 原 E9 误报 3844 条,
+# 全部为"代码/示例/服务地址/常量/时间戳/自披露"语境, 非泄露第三方明文 PII)。
+# 设计原则: 只用**类/上下文**判据, 不用逐值黑名单(可跨数据集移植, 不放过真实 PII)。
+# 真·明文 PII(孤立出现的真实邮箱/"call me 138xxxxxxxx"/裸证件号)仍会命中。
+# ----------------------------------------------------------------------------
+RE_SCHEME_URL = re.compile(r'\b(?:https?|ftps?|mailto|sips?|tel|sms|irc|xmpp|git|ssh|wss?|data|news):[^\s"\'<>）)]*', re.I)
+RE_BARE_URL = re.compile(r'//[a-zA-Z0-9.\-]+[^\s"\'<>）)]*')
+RE_INLINE_CODE = re.compile(r'`[^`\n]+`')
+
+
+def strip_urls_inline(text):
+    """正文里的 URL / 内联反引号代码 → 空格(隐私只在"散文化正文"里算泄露;
+    URL 里的 @ / 内联代码里的值属代码示例, 不判 PII)。"""
+    t = RE_INLINE_CODE.sub(" ", text)
+    t = RE_SCHEME_URL.sub(" ", t)
+    t = RE_BARE_URL.sub(" ", t)
+    return t
+
+
+_PLACEHOLDER_LOCALS = {
+    "user", "username", "me", "my", "myself", "myemail", "email", "some", "someone",
+    "somebody", "foo", "bar", "baz", "bla", "blah", "bla_bla", "abc", "xyz", "xample",
+    "test", "tests", "aaa", "bbb", "ccc", "ddd", "xxx", "x", "example", "sample",
+    "demo", "test1", "test2", "test3", "admin", "root", "nobody", "none", "unknown",
+    "guest", "john", "jane", "johndoe", "john.doe", "jane.doe", "someone.somewhere",
+    "something", "anything", "user1", "user2", "user3", "user4", "account", "address",
+    "user.name", "first.last", "firstlast", "your", "yourname", "your.email",
+    "my.email", "my.email.address", "first", "last", "firstname", "lastname",
+    "newuser", "newuser1", "default", "testuser", "test.user", "dummy", "fake",
+    "fakeuser", "sample.user", "sampleuser", "anyone", "anybody", "my.name", "myname",
+    "local", "localuser", "local.user", "remote", "remoteuser", "remote.user",
+    "client", "client1", "client2", "customer", "customer1", "customer2", "host",
+    "server", "mail", "sender", "recipient", "you", "me1", "me2", "email1", "email2",
+    "email3", "email4", "email5", "addr", "emailaddress", "email.address", "yourname",
+    "hello", "world", "name", "test.user.name", "someone1", "bob", "alice", "sam",
+    "tom", "joe", "mary", "max", "jack", "jill", "fred", "bill", "craig", "giri",
+    "mymail", "j.smith", "jdoe", "jd", "ab", "cd", "ef", "abcd", "xyz123", "foo123",
+    "abc123", "user123", "email123", "hello123", "myadmin", "joe2", "userx", "xuser",
+    "sample1", "sample2", "testuser1", "testuser2", "demo.user", "demo1", "foo.bar",
+    "john.smith", "first.last.name", "user.name1",
+}
+_PLACEHOLDER_DOMAINS = {
+    "domain.com", "domain.org", "domain.net", "example.com", "example.org",
+    "example.net", "example.info", "email.com", "myemail.com", "mycompany.com",
+    "company.com", "client.com", "simple.com", "myapp.com", "mysystem.com",
+    "somewhere.com", "body.com", "mydomain.com", "yourdomain.com", "somecompany.com",
+    "yourcompany.com", "myaddress.com", "address.com", "domain.name", "domain.local",
+    "sample.com", "test.com", "test.info", "test.net", "test.org", "testcompany.com",
+    "fake.com", "fake.org", "your.com", "my.com", "something.com", "somethingelse.com",
+    "myself.com", "mysite.com", "yoursite.com", "website.com", "ourwebsite.com",
+    "mywebsite.com", "mysubdomain.com", "subdomain.com", "site.com", "someplace.com",
+    "myplace.com", "yourplace.com", "some.net", "some.org", "mail.com", "mymail.com",
+    "workmail.com", "work.com", "office.com", "dot.com", "ourdomain.com",
+    "mydomain.org", "ourcompany.com", "myorganization.com", "myorg.com", "org.com",
+    "corp.com", "business.com", "email.example.com", "xample.com", "adomain.com",
+    "googleappsdomain.com", "myaddress.com", "testaddress.com",
+    "comp.net", "shitmail.com", "gamil.com", "findme.com", "testwebsite.com",
+    "olddomain.com", "name.com", "abcde.com", "samplewebsite.com",
+}
+# 服务/机构/项目/邮件列表域名(官方服务地址/开源项目, 非个人隐私)
+_SERVICE_DOMAINS = {
+    "openssh.com", "libssh.org", "jboss.org", "w3.org", "freenode.net", "jabber.org",
+    "google.com", "googleapps.com", "googlecode.com", "googlegroups.com",
+    "microsoft.com", "github.com", "bitbucket.org", "datatables.net", "mozilla.org",
+    "apache.org", "sourceforge.net", "python.org", "ruby-lang.org", "php.net",
+    "perl.org", "nodejs.org", "wordpress.org", "jquery.com", "bootstrap.com",
+    "reactjs.org", "npmjs.com", "pypi.org", "maven.org", "gradle.org", "django.com",
+    "rails.com", "thawte.com", "verisign.com", "digicert.com", "godaddy.com",
+    "cpanel.net", "bluehost.com", "amazon.com", "apple.com", "adobe.com", "cpan.org",
+    "facebook.com", "compaq.com", "caltech.edu", "bristol.ac.uk", "iki.fi",
+    # 云服务账号域(GCP/AppEngine/Heroku 服务账号, 非个人隐私, 2026-09-19 SO v6 残差锚定)
+    "gserviceaccount.com", "rhcloud.com", "appspot.gserviceaccount.com",
+    "heroku.com", "herokussl.com", "googleusercontent.com", "gcp.gserviceaccount.com",
+    # 开源软件/大学公开联系域(2026-09-19 SO v7 残差锚定: 源码头注释/官方示例地址, 非个人 PII)
+    "msu.ru", "pglaf.org", "joehewitt.com", "shinners.org", "wp.pl",
+    "liveinternet.ru", "database.windows.com", "startb.com",
+}
+_LIST_DOMAIN = re.compile(r'(?i)^(?:.*-)?(?:dev|devel|users?|lists?|announce|bugs?'
+                          r'|commits|patches|test|qa|doc|docs|hackers?)(?:-.*?)?$')
+# 精确匹配首段(非前缀) — my/any/some 等仅匹配 my.com/any.com, 不 prefix 误伤
+# mystery/myspace/android 等真实单词域名(误删真邮箱=红线方向)。
+_PLACEHOLDER_FIRST = {"example", "sample", "test", "domain", "your", "my", "some",
+                      "fake", "dummy", "demo", "any", "our", "their", "the"}
+_INTERNAL_SUFFIX = (".internal", ".intranet", ".local", ".localhost", ".corp",
+                    ".corporate", ".dev", ".test", ".example", ".sample", ".demo",
+                    ".home", ".lan", ".private", ".vpc", ".cluster", ".k8s", ".svc",
+                    ".comput", ".azure", ".domain", ".mydomain")
+# 代码片段"伪邮箱"TLD 黑名单(2026-09-19 SO v6 残差锚定): F#/Kotlin/R/混淆代码里
+# `this@ConnectionManager.run` / `pbmc3k@meta.data` / `Rz.T@vec.reshape` /
+# `perf@y.values` / `queue@java.lang.String` / `x@...Invoke` 等, 域名实为代码标识符,
+# TLD 是"run/data/string/invoke/values/bind/service…"这类**绝不可能是真实 TLD** 的词。
+# 用黑名单(非白名单)——只剔除确认非 TLD 的代码词, 绝不放过罕见真实 TLD 邮箱(避免误删真 PII)。
+_CODE_TLD_BLOCK = {
+    "run", "data", "values", "value", "invoke", "invokeall", "string", "object",
+    "class", "method", "function", "lambda", "this", "super", "field", "methodref",
+    "bind", "service", "view", "collect", "create", "label", "node", "fieldlist",
+    "filelist", "stringbuilder", "invokevirtual", "invokestatic", "array", "map",
+    "set", "list", "dict", "collection", "iterator", "iter", "generator", "future",
+    "promise", "task", "job", "worker", "pool", "queue", "stack", "tree", "graph",
+    "buffer", "stream", "writer", "reader", "logger", "event", "signal", "slot",
+}
+# 服务/角色邮箱(系统/组织职能地址, 非个人隐私)
+_SERVICE_LOCALS = {
+    "git", "git2", "gitlab", "deploy", "deployer", "ci", "jenkins", "build",
+    "buildbot", "mockbuild", "sysmailer", "sysmail", "sysadmin", "noreply",
+    "no-reply", "no.reply", "donotreply", "do-not-reply", "dontreply", "postmaster",
+    "abuse", "security", "admin", "root", "info", "support", "help", "sales",
+    "contact", "webmaster", "webadmin", "editor", "manager", "ops", "billing",
+    "sysop", "mail", "mailer", "mailer-daemon", "hostmaster", "undeliverable",
+    "errors", "error", "bounce", "maildaemon", "web", "www", "nobody", "daemon",
+    "system", "host", "server", "hosting", "domain", "domainadmin", "post",
+    "mailadmin", "spam", "report", "feedback", "alerts", "alert", "monitoring",
+    "noc", "dba", "sre", "dev", "developer", "devs", "team", "group", "list",
+    "lists", "announce", "announcements", "commits", "notify", "notifications",
+    "notifier", "updates", "update", "digest", "digests", "news", "newsletter",
+    "subscribe", "unsubscribe", "helpdesk", "ticket", "tickets", "csr", "care",
+    "service", "services", "accounts", "account", "finance", "hr", "recruiting",
+    "jobs", "careers", "press", "media", "pr", "marketing", "webteam", "it",
+    "itdept", "itsupport", "tech", "techsupport", "api", "apis", "bot", "bots",
+    "robot", "automated", "automation", "automailer", "autoreply", "autoresponder",
+    "auto",
+}
+# crypto/SSH 算法标识 local(hmac-sha2-256 / curve25519-sha256 / aes128-gcm 等)
+_CRYPTO_LOCAL = re.compile(
+    r'(?i)^(?:hmac|ssh|rsa|ecdsa|dsa|ed25519|curve|aes|chacha|poly1305|umac|gcm|cbc'
+    r'|ctr|etm|md5|sha\d|ripemd|ecdh|poly|bcrypt|scrypt|argon|pbkdf|3des|blowfish'
+    r'|twofish|seed|camellia|aria|sm2|sm3|sm4|md4|md6)[-_0-9a-z]*$')
+_CRYPTO_KW = ("hmac", "sha1", "sha2", "sha256", "sha512", "ripemd", "chacha",
+              "poly1305", "umac", "curve25519", "gcm", "-cbc", "-ctr", "-etm",
+              "ed25519", "aes128", "aes256", "aes192", "rsa1024", "rsa2048",
+              "rsa4096", "ecdsa", "dh-group", "modp")
+# 明显虚构/示例人名 local(著名虚构角色/序号/键盘串/哈希串)
+_FICTIONAL_LOCAL = re.compile(
+    r'(?i)^(?:test|fake|sample|demo|dummy|guest|user\d*|customer\d*|account\d*|'
+    r'one|two|three|four|five|alpha|beta|gamma|delta|nike\d?|blah_?|asdf+|zxcv+|'
+    r'qwerty|asdfgh|abcd+|abcdefg|abcdefghi|abcdef|harry\.potter|jerry\.lane|'
+    r'indiana\.jones|tom\.cruise|smith\d*|jones\d*|doe|redacted|phonenumber|'
+    r'validname|somename|firstmail|secondmail|onlineshop|help_center|smiletest'
+    r'|testguest|testcust\d*|xample\d*|smiley|hello|world|foo|bar|baz|qux|'
+    r'lorem|ipsum|(?:abc|def|xyz)[a-z]?|sombody|someone|anobody|infobot\d*|name\d*)$')
+
+
+# 模板域首段: my*/your*+占位名词 (mydomain.org.ua / mytenant.com / myapp.com)
+# 及 whatever/first*/last*/parent 字面槽位(whatever@parent.child)。
+# 用占位名词白名单而非 my\w* 裸前缀 — 避免误删 mystery.com / anywhere.net /
+# firstchoice.com / lastminute.com 等**真实注册域名**(误删真邮箱 = 红线方向)。
+_PLACEHOLDER_DOMAIN_HEAD = re.compile(
+    r'(?i)^(?:(?:my|your)(?:mail|email|name|domain|address|company|account|'
+    r'password|username|user|tenant|app|site|service|server|host|test|sample|'
+    r'example|phone|number|id|self|place|shop|data|admin|profile|credential|'
+    r'website)\w*|whatever|parent)$')
+
+
+def _is_camel_code_id(local):
+    """local 为驼峰(≥1 处小写字母紧跟大写字母) → 代码标识符/JID/变量名示例
+    (countService / sunnvaleStarb / toysdemo.ToysDemo / LoveJack / redirectingAddress)。
+    代码问答语料中真实个人邮箱按惯例全小写(john.smith / jane_doe), 不会驼峰,
+    故驼峰即可判代码标识(不要求含数字 — 真实残差的驼峰 local 全不含数字)。"""
+    return bool(re.search(r"[a-z][A-Z]", local))
+
+
+# 模板 local(占位名而非真名): my*/your* + 占位名词(mymailid / myname+tag /
+# yourdomain), 及 whatever*/first*/last* 字面槽位(FirstName.LastName /
+# LASTNAME.FIRSTNAME@enterprise.com)。
+# 用"占位名词白名单"而非 my\w* 裸前缀 — 避免误删 Myles/Youri/Anya 等
+# 以 my/your/any 开头的**真实人名**(隐私误删 = 红线方向, 宁可少删)。
+_TEMPLATE_LOCAL_HEAD = re.compile(
+    r'(?i)^(?:(?:my|your)(?:mail|email|name|domain|address|company|account|'
+    r'password|username|user|tenant|app|site|service|server|host|test|sample|'
+    r'example|phone|number|id|self|place|shop|data|admin|profile|credential|'
+    r'login)\w*(?:\+\w+)?|(?:whatever|first|last)[\w.]*)$')
+
+
+def _email_value_excluded(v):
+    """取值排除: 占位 local/域、服务域、内网域、crypto 算法 id、全大写域、虚构名。"""
+    local = v.split("@")[0]
+    dom_raw = v.split("@")[-1]
+    dom = dom_raw.lower()
+    ll = local.lower()
+    # 全大写域名(Kerberos SPN user@REALM / 示例大写): 真实正文邮箱几乎不会全大写
+    if dom_raw.isupper() and any(c.isalpha() for c in dom_raw) and len(dom_raw) > 3:
+        return True
+    if ll in _PLACEHOLDER_LOCALS or dom in _PLACEHOLDER_DOMAINS:
+        return True
+    first = dom.split(".")[0]
+    if first in _PLACEHOLDER_FIRST:  # 精确匹配首段(不 prefix, 避免误伤 mystery/android)
+        return True
+    if dom.endswith(_INTERNAL_SUFFIX):
+        return True
+    if len(local) > 28:
+        return True
+    if ll in _SERVICE_LOCALS or ll.startswith("mockbuild") or ll.startswith("buildbot"):
+        return True
+    if _CRYPTO_LOCAL.match(ll) or any(kw in ll for kw in _CRYPTO_KW):
+        return True
+    if local.isupper() and local.isalpha() and 2 <= len(local) <= 6:  # 示例/数据 token
+        return True
+    if local.replace(".", "").isdigit():  # 全数字 local(账号编号)
+        return True
+    # 机器/服务生成的 hex 账号 local(如 54f03dbd4382ec9101000159@myapp.rhcloud.com)
+    if re.fullmatch(r"[0-9a-fA-F]{16,}", local):
+        return True
+    if dom in _SERVICE_DOMAINS or any(dom == d or dom.endswith("." + d)
+                                      for d in _SERVICE_DOMAINS):
+        return True
+    if _LIST_DOMAIN.match(first):  # 邮件列表 local 首段
+        return True
+    if first == "conference":  # XMPP/MUC 会议域(user@conference.xxx)
+        return True
+    if _FICTIONAL_LOCAL.match(local):
+        return True
+    # 模板域: my*/your*/whatever/any*/first*.*last*/parent(2026-09-19 SO v7 残差锚定)
+    if _PLACEHOLDER_DOMAIN_HEAD.match(first):
+        return True
+    # 模板 local: mymailid / myname+tag / whatevername / firstname.lastname
+    if _TEMPLATE_LOCAL_HEAD.match(local):
+        return True
+    # 驼峰代码标识 local: countService / sunnvaleStarb / toysdemo.ToysDemo / LoveJack
+    if _is_camel_code_id(local):
+        return True
+    return False
+
+
+_EMAIL_CUE = re.compile(
+    r'(?i)(?:\bemail\b|\be-?mail\b|\bmail\b|contact|reach me|reach out|write to|'
+    r'send to|send me|send a|mail to|mailing list|mail me|subscribe|thanks to|'
+    r'suggested|submit|report it|file a|contact me|contact the|get in touch|'
+    r'feel free to|feel free|ping me|let me know|my (?:email|e-?mail|address|email address)|'
+    r'(?:email|e-?mail|mail|address)[:= ]|\bFrom:|\bTo:|\bCc:|\bBcc:|\bReturn-Path:|'
+    r'Message-ID|E=|emailAddress=|\bCN=|\bC=|\bO=|Copyright|author|contribut|'
+    r'get involved|someone like|address like|schema|for example|e\.g\.|such as|'
+    r'sample|example|e\. g\.|comment by|note by|by [A-Z][a-z]+ [A-Z][a-z]+,|'
+    r'made many changes|made a lot|altered by|added by|created by|maintained by|'
+    r'register with|sign up|log ?in to|log ?into|test account|test login|test page|'
+    r'sandbox|demo user|demo accoun|here is a test|test user|test credentials|'
+    r'here is the|here are the|logon name|relay for|unable to relay|log into|'
+    r'send the form|to the form|form to|send it to|send my|my password|mypass|'
+    r'receive the message|message inside|send the form to|the form to|'
+    r'you have at|you with|any questions|any questions you|talk about this|'
+    r'communicate me|let me know|drop me|shoot me|message me|reach out|reach me via|'
+    r'bereikbaar via|you can reach|can be reached|get me at|reach me at|contact me at|'
+    r'you can mail|mail the author|author at|the author|project member|'
+    r'valid email|invalid email|expected valid|valid emails|invalid emails|'
+    r'dynamic values|sample data|test data|sample email|example email|'
+    r'me at|email me|at my|my address|write to me|contact me|ping me|'
+    r'best regards|\bregards,|\bbereik|\busername\b|\buser:|customer id|'
+    r'customer email|\bbefore:|\bafter:|'
+    r'formatted in the|will be:|looks like this|as follows|for example:|'
+    r'like this:|in the format|same format|general way|sample output|'
+    r'got the token|userprincipalname|accountenabled|lastsignindate|'
+    r'identity exception|got an email from)')
+_EMAIL_CODE_CTX = re.compile(
+    r'(?i)(?:%w\[|\.each\b|addresses\s*=|\bvalid_address|\bcat=\[|\bdat=|\bflg=|'
+    r'IntentService|\bsmtptransport|\bSmtpClient|heroku\[|\[From\]|\[To\]|\[Subject\]|'
+    r'5\.7\.1|->\s*\[|=\s*>|2147483647|\bINT_MAX|logon name|business=|payer_status|'
+    r'sender-id|sender id|c2dm|gcm|fcm\b)')
+
+
+def _email_ctx_excluded(text, s, e):
+    """上下文排除: 引号/括号/CSV/表格/邮件头/代码结构包裹 = 代码示例, 非散文化泄露。"""
+    pre = text[s - 1] if s > 0 else " "
+    post = text[e] if e < len(text) else " "
+    if pre in "\"'(<[{" or post in "\"'>)]}" or post == "/":  # 代码字面量/<addr>/[addr]
+        return True
+    if pre == ">" and post == "<":  # HTML 元素内容 <td>x@y.com</td> 网页脚注/联系块(自披露)
+        return True
+    if pre in "@:;" or post in ":;":  # user:pass@host / SPN / domain@REALM / 分隔
+        return True
+    if pre == "=":  # URL 查询参数 key=x@y / OData / 代码赋值, 真实正文邮箱不会以 = 开头
+        return True
+    if pre == "#" or post == "#":  # git ref (data@store.js#428) / 锚点
+        return True
+    if pre == "|" or post == "|":  # 表格竖线紧邻
+        return True
+    if pre == "," or post == ",":  # CSV / 字段列表
+        return True
+    # 表格/列表单元格: 邮箱两侧(跨 1-2 空格)是竖线 → "| a@b.com |"
+    _l = text[max(0, s - 2):s].strip()
+    _r = text[e:e + 2].strip()
+    if _l.endswith("|") or _r.startswith("|"):
+        return True
+    if re.search(r'(?:From|To|Cc|Bcc|Return-Path|Message-ID|E|emailAddress)\s*[=:]?\s*$',
+                 text[max(0, s - 14):s]):
+        return True  # 邮件头/证书字段紧邻
+    window = text[max(0, s - 46):e + 24]  # 行内窗: 自披露/示例/代码结构 cue
+    if _EMAIL_CUE.search(window) or _EMAIL_CODE_CTX.search(window):
+        return True
+    return False
+
+
+def _email_should_flag(prose, s, e):
+    v = prose[s:e]
+    if not looks_like_real_email(v):
+        return False
+    if _email_value_excluded(v):
+        return False
+    if _email_ctx_excluded(prose, s, e):
+        return False
+    return True
+
+
+_CODE_PUNCT = set('."\'/:=,@;(){}[]<>+*/&|!%$~^?#')
+
+
+def _neighbor_token(text, i, step):
+    """返回 i 处相邻(跳过空白)的完整空白分隔 token。"""
+    n = len(text)
+    while 0 <= i < n and text[i].isspace():
+        i += step
+    if not (0 <= i < n):
+        return ""
+    start = end = i
+    if step > 0:
+        while end < n and not text[end].isspace():
+            end += 1
+        return text[start:end]
+    while start >= 0 and not text[start].isspace():
+        start -= 1
+    start += 1
+    return text[start:i]
+
+
+def _num_ctx_excluded(text, s, e):
+    """数字语境排除(手机/身份证共用): 浮点碎片/代码标点紧邻/邻接数字或代码 token/前导+。"""
+    pre = text[s - 1] if s > 0 else " "
+    post = text[e] if e < len(text) else " "
+    if pre == "." or (post == "." and e + 1 < len(text) and text[e + 1].isdigit()):
+        return True  # 浮点碎片
+    if pre in _CODE_PUNCT or post in _CODE_PUNCT:
+        return True  # 代码标点紧邻
+    for tok in (_neighbor_token(text, s - 1, -1), _neighbor_token(text, e, +1)):
+        if tok.isdigit():  # 邻接纯数字 = 数据序列/大数/序列号(真实手机号两侧是文字)
+            return True
+        if re.search(r'0[xXbB]|2\s*\*\*|\bbin\s*\(|\bhash|bytes|millis|nanoseconds|'
+                     r'time_stamp|timestamp|epoch', tok, re.I):
+            return True  # 邻接代码/时间戳 token
+    if pre == "+":
+        return True  # 前导 + (国际拨号/带符号数值)
+    return False
+
+
+_KNOWN_CONSTS = {"17179869184", "14159265359", "14285714286", "16777216000",
+                 "12345678901", "19999999999", "17179869183", "17179869185",
+                 "16106127360"}
+
+
+def _is_fictitious_phone(num):
+    """虚构/常量号: 已知常量、555 中间段、全同/升序/降序、尾 0000。"""
+    if num in _KNOWN_CONSTS:
+        return True
+    if "555" in num[1:4]:
+        return True
+    if "00000" in num or "11111" in num or "99999" in num or "22222" in num:
+        return True
+    d = [int(c) for c in num]
+    if all(d[i + 1] - d[i] == 1 for i in range(len(d) - 1)):
+        return True
+    if all(d[i + 1] - d[i] == -1 for i in range(len(d) - 1)):
+        return True
+    if num.endswith("0000"):
+        return True
+    return False
+
+
+def _phone_should_flag(prose, s, e):
+    num = prose[s:e]
+    if _is_fictitious_phone(num):
+        return False
+    if _num_ctx_excluded(prose, s, e):
+        return False
+    return True
+
+
+_PROVINCE2 = {"11", "12", "13", "14", "15", "21", "22", "23", "31", "32", "33",
+              "34", "35", "36", "37", "41", "42", "43", "44", "45", "46", "50",
+              "51", "52", "53", "54", "61", "62", "63", "64", "65"}
+
+
+def _idc_should_flag(prose, s, e):
+    """身份证: 省码须合法(前 2 位) + 非代码/数值语境, 否则是 JS 大数/状态 id/浮点。"""
+    v = prose[s:e]
+    if not (len(v) == 18 and v[:6].isdigit()):
+        return False
+    if v[:2] not in _PROVINCE2:
+        return False
+    if _num_ctx_excluded(prose, s, e):
+        return False
+    return True
+
+
+def _hit_ctx(text, s, e, w=60):
+    """命中值 ±w 字符上下文(单行化, 超长截断), 供报告明细展示命中原文。"""
+    pre = text[max(0, s - w):s].replace("\n", "⏎")
+    post = text[e:e + w].replace("\n", "⏎")
+    seg = (pre if len(pre) < w else "…" + pre[-w:]) + text[s:e] + \
+          (post if len(post) < w else post[:w] + "…")
+    return seg.strip()
+
+
 def real_bank_cards(text):
     """银行卡号(Luhn + 边界), 误报根除:
       - 排除小数碎片/标识符内数字串(如 0.6297…/4.6666…)
@@ -164,10 +566,16 @@ def real_bank_cards(text):
 
 
 def is_pkg_version_email(v):
-    """pkg@version 判定(如 webpack@4.x.x / Typescript@4.0.3): @后第一段以数字开头
-    即版本号, 非真实邮箱(真实邮箱域名以字母开头, 如 foo@bar.com)。"""
-    first = v.split("@")[-1].split(".")[0]
-    return bool(first) and first[0].isdigit()
+    """pkg@version 判定(如 webpack@4.0.3 / Typescript@4.0.3): @后是"点分版本号"
+    (≥2 段纯数字)才是版本, 非真实邮箱。
+    ⚠️ 仅首段数字 + 字母 TLD(163.com / 126.com / 139.com 等真实数字域名)**不判版本**
+    —— 旧口径"首段数字即版本"会漏掉 zhang@163.com 这类真实中文邮箱(2026-09-19 自测校准)。"""
+    parts = v.split("@")[-1].split(".")
+    first = parts[0]
+    if not first or not first[0].isdigit():
+        return False
+    num_segs = sum(1 for p in parts[1:] if p and p[0].isdigit() and p.isdigit())
+    return num_segs >= 2
 
 
 def looks_like_real_email(v):
@@ -183,6 +591,11 @@ def looks_like_real_email(v):
         return False
     tld = dom.rsplit(".", 1)[-1]
     if not (2 <= len(tld) <= 10 and tld[0].isalpha()):
+        return False
+    # 代码片段"伪邮箱" TLD: 域名实为代码标识符(this@ConnectionManager.run /
+    # pbmc3k@meta.data / x@...Invoke), TLD 是 run/data/string/invoke 等绝不可能
+    # 真实 TLD 的词(黑名单, 不影响任何真实邮箱); 全大写 TLD 同理(StackTrace 片段)。
+    if tld in _CODE_TLD_BLOCK:
         return False
     if len(local) < 2 or not any(c.isalpha() for c in local):
         return False
@@ -212,6 +625,29 @@ RE_BANKCARD = re.compile(r'(?<!\d)[3-6]\d{12,18}(?!\d)')
 RE_PRIV_IP = re.compile(
     r'(?<![0-9a-zA-Z.])(?:192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![0-9a-zA-Z.])')
 # 注: 10.x.x.x 为 §6 认可的合规替换值(RFC1918 测试段), 不作为漏脱敏检出
+# 文档/示例标准私网地址(2026-09-19 SO 全量 2062 处 IP 锚定): 教科书/官方文档
+# 使用频率极高的"示例网段", 不构成可定位个人的真实内网拓扑泄露。
+_DOC_IP_NETS = (
+    "192.168.1.", "192.168.0.",       # 教科书默认网关/首网段(SO 内 450+ 处)
+    "192.168.56.",                    # VirtualBox 固定 host-only 网段
+    "172.17.",                        # Docker 默认 bridge
+)
+_DOC_IP_EXACT = {
+    "192.168.99.100", "192.168.99.1", "192.168.100.1", "192.168.100.100",
+    "192.168.2.2", "192.168.3.3", "192.168.4.4",
+}
+
+
+def _ip_doc_excluded(ip, prose_text, i):
+    """IP 属文档标准示例地址(段/精确) 或邻近 30 字符含 example/e.g./sample → 排除。"""
+    if any(ip.startswith(pfx) for pfx in _DOC_IP_NETS):
+        return True
+    if ip in _DOC_IP_EXACT:
+        return True
+    near = prose_text[max(0, i - 30):i + len(ip) + 30].lower()
+    if re.search(r'\bexample\b|e\.g\.|\bsample\b|示例|例如', near):
+        return True
+    return False
 RE_SOCIAL_ACCT = re.compile(r'(?<![A-Za-z0-9])(?:微信号|weixin|qq号|qq|vx)\s*[:：]\s*(?=[a-zA-Z0-9_-]*\d)[a-zA-Z0-9_-]{5,}', re.I)
 
 # §4.1 低质: 纯文字闲聊(无代码需求/无报错信息)
@@ -283,8 +719,8 @@ RECTIFY_ADVICE = {
     "type值错误": "type 字段改为固定值 general_code_qa_dict",
     "id格式": "id 统一为 QA_2026_xxx 前缀哈希编码",
     "隐藏反爬文本": "清洗剔除 LeetCode 隐形水印 span(§4.1 噪点)",
-    "隐私泄露": "按 §6 小写 x 占位脱敏(不得直接删除)",
-    "疑似内网IP": "内网 IP 按 §6 x 占位脱敏(代码示例除外, 人工确认)",
+    "隐私泄露": "人工复核命中原文(附录/明细节含值+上下文); 属实第三方 PII 按 §6 小写 x 占位脱敏(不得直接删除), 自披露/示例/代码值标注豁免",
+    "疑似内网IP": "人工复核命中原文(明细节含 IP+上下文); 真实内网拓扑按 §6 x 占位脱敏, 文档示例地址/代码示例标注豁免",
     "疑似社交账号": "社交账号按 §6 x 占位脱敏",
     "非文本资源残留": "剔除图片/二进制/外链资源(§4.1 仅保留纯文本+代码)",
     "乱码字符": "修复编码或剔除样本(§4.1)",
@@ -529,13 +965,282 @@ def check_code_syntax(code_fields):
 
 
 # ----------------------------------------------------------------------------
+# 深度质检(语义层 N1-N9) —— 原 code_qa_deep_qc.py 逻辑并入(2026-09-19 脚本合并)。
+# 覆盖主检查盲区(2026-09 抽样核验沉淀): 无代码块/模板占位/语言标注交叉/token 复算/
+# 截断/上标压平/时间字段共模/AI 答案标记。全部默认 WARN, 不改 E1-E14 的 ERROR 语义;
+# --fail-on-warn 可转 ERROR 接 CI。dataset_class: code=编程题集 / forum=论坛问答(抑制 N1/N3/N6)。
+# ----------------------------------------------------------------------------
+RULE_DESC = {
+    "N1_无代码块": "question/answer 均无围栏代码块",
+    "N2_模板占位": "答案含采集/平台模板占位模式",
+    "N3_语言标注不符": "primary_language 与代码块语言/代码块有无交叉不符",
+    "N4_token复算偏差": "按声明 tokenizer 抽样复算 token, 与存值不一致",
+    "N5_截断嫌疑": "answer 疑似尾部截断(句中收尾/围栏未闭合)",
+    "N6_上标压平可疑": "约束数值疑似上标压平(109/231 类)",
+    "N8_时间字段共模": "question_time 单一取值占比过高(疑似题目时间口径)",
+    "N9_AI生成答案": "答案作者标记为 AI 生成(info, 口径待客户)",
+}
+
+TEMPLATE_PATTERNS = [
+    ("write_idea_cn", "此处撰写解题思路"),
+    ("problem_code", "Problem: Code"),
+    ("title_repeat", "题解: "),
+]
+AI_AUTHOR_PAT = re.compile(r"\bAI answer\b|AI\s*生成|GPT[- ]?generated", re.I)
+SUPP_PAT = re.compile(
+    r"(<=|≥|<)\s*10[1-9](?![0-9.,])|\b10[1-9]\s*(<=|≥|<)|(-\s*)?231\s*-\s*1")
+FENCE = re.compile(r"```([^\n`]*)\n(.*?)```", re.S)
+FENCE_OPEN = re.compile(r"(?m)^\s*```")
+STOP_PUNCT = set(".!?。！？:;:;")
+CODE_KW_PAT = re.compile(
+    r"(?:\bSELECT\b|\bINSERT\b|\bCREATE\s+TABLE\b|\bdef\b|\bclass\b|\bfunction\b|"
+    r"\bpublic\s+static\b|\bint\s+main\b|\bvar\b|console\.log|print\s*\(|input\s*\(|"
+    r"#include|\bimport\b|\bfn\b|\bpackage\s+main\b|\becho\b|\bif __name__|->|=>)", re.I)
+STRONG_CODE_PAT = re.compile(
+    r"(?m)(\A[ \t]*#include|int main\(|using namespace std|#ifndef\s|#define\s|"
+    r"public class\s+[A-Za-z_]|import java\.|public static void|"
+    r"^\s*(def |class )\w+.*:|^\s*import \w+.*$|^\s*fn \w+|^\s*let mut |^\s*<?php)"
+)
+RAW_DETECTABLE = {"go", "java", "rust", "c#", "php", "c++", "c", "python",
+                  "javascript", "typescript"}
+FENCE_LANG_MAP = {
+    "python": "python", "py": "python", "python3": "python",
+    "java": "java", "cpp": "c++", "c++": "c++", "cxx": "c++", "c": "c",
+    "js": "javascript", "javascript": "javascript", "typescript": "typescript",
+    "ts": "typescript", "go": "go", "golang": "go", "rust": "rust",
+    "php": "php", "csharp": "c#", "cs": "c#", "c#": "c#", "kotlin": "kotlin",
+    "swift": "swift", "ruby": "ruby", "bash": "bash", "sh": "bash", "shell": "bash",
+    "sql": "mysql", "mysql": "mysql", "psql": "postgresql", "powershell": "powershell",
+    "ps1": "powershell", "vb": "vb.net", "vb.net": "vb.net", "vbnet": "vb.net", "scala": "scala",
+    "r": "r", "perl": "perl", "html": "html", "css": "css", "json": "json",
+    "shellsession": "bash", "console": "", "text": "", "txt": "", "markdown": "",
+    "plaintext": "",
+}
+NON_LANG = {"json", "html", "css", "markdown", "plaintext", "text", "sql", "mysql",
+            "postgresql", "mssql", "oracle", "bash", "shell", "powershell", "console"}
+PLACEHOLDER_ANSWER_PAT = re.compile(
+    r"^\s*(题解[:：]\s*)?\S{0,16}\s*\n\s*(此处撰写解题思路|Problem: Code|Code|题解|完成|测试|aa|。|1)\s*$")
+LANG_SYNONYMS = {
+    "cpp": "c++", "cxx": "c++", "c++": "c++",
+    "js": "javascript", "typescript": "typescript",
+    "vb": "vb.net", "vbnet": "vb.net", "vb.net": "vb.net",
+    "ts": "typescript", "py": "python", "python3": "python",
+    "golang": "go", "csharp": "c#", "cs": "c#", "c#": "c#",
+    "powershell": "powershell", "ps1": "powershell",
+    "mysql": "sql", "sql": "sql", "psql": "sql",
+    "bash": "shell", "sh": "shell", "shell": "shell", "shellsession": "shell",
+    "console": "", "text": "", "txt": "", "markdown": "", "plaintext": "",
+}
+_LANG_EQUIV = {"c": "c/c++", "c++": "c/c++",
+               "javascript": "js/ts", "typescript": "js/ts"}
+
+
+def strip_comments(text):
+    """剥离注释(启发式): /* */ 块 + // 行 + Rust #[doc] 属性行。注释内嵌 ``` 不干扰配对。"""
+    if not text:
+        return text
+    t = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    t = "\n".join(l for l in t.splitlines()
+                  if not l.lstrip().startswith(("//", "#[doc")))
+    return t
+
+
+def raw_code_lang(text):
+    """识别裸代码(无围栏)语言, 按排他性顺序判定(Go/C#/Rust/PHP/C++/C/JS/Java/Python)。
+    小众语言(ruby/haskell/perl/kotlin/ocaml/shell)无可靠排他特征 → 返回 None。"""
+    t = text or ""
+    if re.search(r"(?m)^\s*package\s+main\b", t):
+        return "go"
+    if re.search(r"(?m)^\s*using\s+(System|Microsoft|static)\b", t) \
+            or re.search(r"\bConsole\.(ReadLine|WriteLine|Read|ReadKey|Out)\b", t):
+        return "c#"
+    if re.search(r"(?m)^\s*fn\s+main\s*\(", t) or "fn main" in t or re.search(r"(?m)^\s*use\s+std::", t):
+        return "rust"
+    if re.search(r"(?m)^\s*<\?php", t):
+        return "php"
+    if "using namespace std" in t or re.search(r"#include\s*<bits/stdc\+\+\.h>", t) \
+            or re.search(r"\bstd::\w+", t) or re.search(r"\bcout\s*<<", t):
+        return "c++"
+    if re.search(r"(?m)^\s*#\s*include\s*[<\"]", t):
+        return "c"
+    if re.search(r"console\.log|require\(|function\s+main\b|process\.stdin|createInterface", t):
+        return "javascript"
+    if re.search(r"(?m)^\s*import\s+(?:static\s+)?java\.", t) or re.search(r"\bSystem\.out\.", t) \
+            or re.search(r"(?m)^\s*public\s+(?:final\s+|abstract\s+)?class\s+\w+", t) \
+            or "void main(String" in t or "String[] args" in t:
+        return "java"
+    if re.search(r"(?m)^\s*def\s+\w+.*:", t) or "if __name__" in t \
+            or re.search(r"(?m)^\s*(self\.|print\s*\(|input\s*\()", t) or '"""' in t or "'''" in t:
+        return "python"
+    return None
+
+
+def has_code_signal(text):
+    """宽口径「代码结构」信号(语言无关) —— 救回 raw_code_lang 无法判语言但有代码结构
+    的小众语言裸代码, 避免 N1/N3 误判「无代码」。每条均为散文里几乎不会出现的结构标记。"""
+    t = text or ""
+    if not t.strip():
+        return False
+    if re.search(r"(?m)^\s*[A-Za-z_]\w*(?:\.[A-Za-z_]\w+)*\s*;\s*$", t):
+        return True
+    if "->" in t or "=>" in t:
+        return True
+    if re.search(r"(?m)^\s*my\s+[@$]\w", t) or re.search(r"\buse\s+(strict|warnings)\b", t):
+        return True
+    if re.search(r"(?m)\bqw\[|<>\b|^\s*[@$][A-Za-z_]\w*\s*=|\bchomp\b", t):
+        return True
+    if "<-" in t or re.search(r">>=|::\s*[A-Z\[]", t):
+        return True
+    if re.search(r"(?m)^\s*(fun|let|val)\s+\w+", t):
+        return True
+    if re.search(r"(?m)^\s*(open|module)\s+[A-Z]\w+", t):
+        return True
+    if re.search(r"\bgets\b|\bputs\b|\.times\b|\.chomp\b|\bdo\s*(\||\{)", t):
+        return True
+    if re.search(r"(?m)^\s*(awk|sed|read|printf)\b", t):
+        return True
+    if re.search(r"(?m)^\s*def\s+\w+\s*:", t) or re.search(r"(?m)^\s*for\s+\w+\s+in\s+\w+", t):
+        return True
+    return False
+
+
+def _norm_lang(x):
+    s = str(x or "").strip().lower()
+    return LANG_SYNONYMS.get(s, s)
+
+
+def _lang_neq(pl_norm, actual_set):
+    """pl 与 actual 是否「不等价」(c/c++ 与 js/ts 互认)。返回 True=确实不符。"""
+    p = _LANG_EQUIV.get(pl_norm, pl_norm)
+    for x in actual_set:
+        if x in ("", "ignore", '"', "'", "`"):
+            continue
+        if _LANG_EQUIV.get(x, x) == p:
+            return False
+    return True
+
+
+def fence_langs(text):
+    out = []
+    for m in FENCE.finditer(strip_comments(text)):
+        head = (m.group(1) or "").strip()
+        if not head or not re.match(r"^[A-Za-z0-9+#.-]+$", head.split()[0]):
+            continue
+        lang = head.split()[0].lower()
+        lang = FENCE_LANG_MAP.get(lang, lang)
+        if lang:
+            out.append(lang)
+    return out
+
+
+def deep_check_record(rec, dataset_class="code"):
+    """深度语义层 N1-N9, 返回 (issues {rule: detail}, ctx {q,a,meta,fences})。
+    dataset_class: "code"=答案应含代码的编程题集(LeetCode/AtCoder/CodeChef);
+                   "forum"=论坛问答(StackExchange 等), 纯文字答案合法 → 抑制 N1/N3/N6。"""
+    forum = (dataset_class == "forum")
+    msg = rec.get("message") or [{}]
+    q = ""
+    a = ""
+    for turn in msg:
+        q += (turn.get("question") or "") + "\n"
+        a += (turn.get("answer") or "") + "\n"
+    m = rec.get("metadata") or {}
+    pl = str(m.get("primary_language") or "")
+    a_sc = strip_comments(a)
+    q_sc = strip_comments(q)
+    afences = fence_langs(a)
+    qfences = fence_langs(q)
+    fences = afences + qfences
+    issues = {}
+
+    # N1 无代码块(仅 code 类适用; forum 纯文字答案合法 → 豁免)
+    raw_lang = None
+    if not forum and not FENCE.search(a_sc) and not FENCE.search(q_sc):
+        raw_lang = raw_code_lang(a_sc)
+        if raw_lang is None:
+            if has_code_signal(a_sc):
+                raw_lang = "__signal__"
+            elif STRONG_CODE_PAT.search(a_sc):
+                raw_lang = "__strong__"
+            elif m.get("has_code") is True:
+                raw_lang = "__hascode__"
+        if raw_lang is None and len(a_sc.strip()) > 40:
+            issues["N1_无代码块"] = "q/a 均无代码块(含裸代码判定)"
+
+    # N2 模板占位
+    for name, pat in TEMPLATE_PATTERNS[:2]:
+        if pat in a:
+            issues["N2_模板占位"] = pat
+            break
+    if "N2_模板占位" not in issues and PLACEHOLDER_ANSWER_PAT.match(a.strip()):
+        issues["N2_模板占位"] = "标题式空答案"
+
+    # N3 语言交叉验证(仅校验答案代码语言; 题面示例代码不计入)
+    pl_norm = _norm_lang(pl)
+    if pl and pl_norm not in ("unknown", "text", "none", "") and not forum:
+        if afences:
+            valid = {_norm_lang(f) for f in afences}
+            valid = {x for x in valid if x and x not in ("ignore", '"', "'", "`")}
+            if valid and _lang_neq(pl_norm, valid):
+                issues["N3_语言标注不符"] = f"标 {pl} 但答案代码语言 {sorted(valid)}"
+        else:
+            a_rl = _norm_lang(raw_code_lang(a_sc))
+            if a_rl:
+                if pl_norm in RAW_DETECTABLE and _lang_neq(pl_norm, {a_rl}):
+                    issues["N3_语言标注不符"] = f"标 {pl} 但答案裸代码语言 {a_rl}"
+            elif not (has_code_signal(a_sc) or CODE_KW_PAT.search(a_sc)
+                      or STRONG_CODE_PAT.search(a_sc) or m.get("has_code") is True):
+                issues["N3_语言标注不符"] = f"标 {pl} 但答案无代码块且无代码特征词"
+    if not forum and pl.lower() in ("json", "html", "css"):
+        issues["N3_语言标注不符"] = issues.get("N3_语言标注不符", "") + \
+            f" | 标 {pl}(数据格式/标记语言, 非编程语言)"
+
+    # N5 截断嫌疑(仅 code 类; forum 把 ``` 当行内代码, 围栏天然不成对 → 抑制)
+    if not forum and len(FENCE_OPEN.findall(a_sc)) % 2 == 1:
+        issues["N5_截断嫌疑"] = "代码围栏未闭合"
+
+    # N6 上标压平(仅 code 类: 竞赛题约束数值; forum 普通数字误报 → 抑制)
+    if not forum and SUPP_PAT.search(q):
+        issues["N6_上标压平可疑"] = SUPP_PAT.search(q).group(0)
+
+    # N9 AI 答案
+    for turn in msg:
+        ans = turn.get("answer") or ""
+        if AI_AUTHOR_PAT.search(ans) or AI_AUTHOR_PAT.search(str(m.get("answer_author") or "")):
+            issues["N9_AI生成答案"] = "answer/author 含 AI 标记"
+            break
+
+    return issues, {"q": q, "a": a, "meta": m, "fences": fences}
+
+
+# ----------------------------------------------------------------------------
 # 检查逻辑
 # ----------------------------------------------------------------------------
 class QaQC:
     def __init__(self, near_dup=True, shingle_cap=NEAR_DUP_SHINGLE_CAP,
-                 max_detail=200000, exempt_multi_turn=False):
+                 max_detail=200000, exempt_multi_turn=True,
+                 dataset_class="code", token_sample=0.0, fail_on_warn=False):
         self.near_dup = near_dup            # 是否启用近似查重(§4.2 LQ7)
-        self.exempt_multi_turn = exempt_multi_turn  # 构造性单轮数据集 → 多轮占比单列 WARN, 不触发退回
+        # 多轮占比 ≥10% 红线默认豁免(2026-09-19): 代码问答数据集构造上多为单轮
+        # (SO 采纳答案/编程题集), 多轮 0% 单列 WARN 不触发退回; 需多轮口径的
+        # 工单/追答类数据用 exempt_multi_turn=False 显式关闭豁免。
+        self.exempt_multi_turn = exempt_multi_turn
+        # 深度语义层(N1-N9) —— 合并自 code_qa_deep_qc.py
+        self.dataset_class = dataset_class  # code=编程题集 / forum=论坛问答
+        self.token_sample = token_sample    # N4 token 复算抽样比例(0=关)
+        self.fail_on_warn = fail_on_warn    # 深度层 WARN 是否转 ERROR 接 CI
+        self._deep_rng = random.Random(20260918)
+        self._deep_enc = None
+        if token_sample and token_sample > 0:
+            try:
+                import tiktoken
+                self._deep_enc = tiktoken.get_encoding("o200k_base")
+            except Exception:  # tiktoken 缺失时 N4 自动跳过
+                self._deep_enc = None
+        self.deep_rule_hits = {k: 0 for k in RULE_DESC}
+        self.deep_rule_samples = {k: [] for k in RULE_DESC}
+        self.deep_qtime = collections.Counter()
+        self.deep_tok_mismatch = 0
         self.shingle_cap = shingle_cap      # shingles 收集上限, 超过停止收集
         self.near_dup_skipped = False       # 因超上限/禁用而跳过近似查重
         self.max_detail = max_detail        # 明细列表上限(计数不受限, 明细封顶防大集 OOM)
@@ -562,6 +1267,7 @@ class QaQC:
                              "LQ3_回答过短无实质": 0, "LQ4_隐私未脱敏": 0,
                              "LQ5_违规内容": 0, "LQ6_占位符乱码模板": 0,
                              "LQ7_问答高度近似": 0}}
+        self.ip_detail = []         # [(rid, ip, 上下文)] 内网 IP 全量命中(报告附录展示原文)
         self._seen_q = {}
         self._seen_firstq = {}
         self._file_turn_kinds = {}  # 文件 → {single, multi} 出现标记(§3 分片归档检查)
@@ -738,31 +1444,49 @@ class QaQC:
         prose_text = RE_MATH_SPAN.sub(" ", prose_text)
         # 样例段豁免(见 RE_SAMPLE_SPAN 注释): 【样例】内是题目测试数据
         prose_text = RE_SAMPLE_SPAN.sub(" ", prose_text)
-        priv = []
-        for em in RE_EMAIL.finditer(prose_text):
-            v = em.group(0)
-            dom = v.split("@")[-1].lower()
-            local = v.split("@")[0]
-            if dom in EMAIL_WHITELIST:
-                continue
-            if dom.endswith(EMAIL_GH_PATH) and local.replace(".", "").isdigit():
-                continue  # GitHub noreply 邮箱(12345+user@users.noreply.github.com)
-            if not looks_like_real_email(v):
-                continue  # pkg@version / a@a.c 测试串 / 路径片段 等误报
-            priv.append("邮箱")
-            st["privacy_hits"]["邮箱"] = st["privacy_hits"].get("邮箱", 0) + 1
-        if RE_PHONE.search(prose_text):
-            priv.append("手机号")
-            st["privacy_hits"]["手机号"] = st["privacy_hits"].get("手机号", 0) + 1
+        # URL/内联代码豁免: URL 里的 @ / 内联反引号代码里的值属代码示例, 不判 PII
+        prose_text = strip_urls_inline(prose_text)
+        priv, priv_hits = [], []  # priv_hits: [(类型, 命中值, 上下文)] 供报告明细展示
+        # 邮箱: 文档级多重性 + 逐条上下文判定(消除 SO 代码/示例/服务/自披露误报 3844→~0)
+        # 一条 Q&A 里 >=3 个邮箱 → 几乎必是 CSV/数组/正则测试集/示例, 而非"泄露单个真实 PII"
+        _ems = list(RE_EMAIL.finditer(prose_text))
+        if len(_ems) < 3:
+            for em in _ems:
+                if _email_should_flag(prose_text, em.start(), em.end()):
+                    priv.append("邮箱")
+                    st["privacy_hits"]["邮箱"] = st["privacy_hits"].get("邮箱", 0) + 1
+                    priv_hits.append(("邮箱", em.group(0),
+                                      _hit_ctx(prose_text, em.start(), em.end())))
+                    break
+        # 手机号: 逐条语境判定(虚构号/常量/时间戳/代码上下文排除, 孤立真号仍命中)
+        for m in RE_PHONE.finditer(prose_text):
+            if _phone_should_flag(prose_text, m.start(), m.end()):
+                priv.append("手机号")
+                st["privacy_hits"]["手机号"] = st["privacy_hits"].get("手机号", 0) + 1
+                priv_hits.append(("手机号", m.group(0),
+                                  _hit_ctx(prose_text, m.start(), m.end())))
+                break
         # 时间戳语境豁免(见 RE_TS_CTX 注释): rev=/id=/version= 后的长数字是标识符非身份证
+        # 身份证: 省码合法 + 非代码/数值语境(JS 大数/Twitter 状态 id/浮点 排除)
         _prose_idc = RE_TS_CTX.sub(" ", prose_text)
-        if RE_IDCARD.search(_prose_idc):
-            priv.append("身份证")
-            st["privacy_hits"]["身份证"] = st["privacy_hits"].get("身份证", 0) + 1
+        for m in RE_IDCARD.finditer(_prose_idc):
+            if _idc_should_flag(_prose_idc, m.start(), m.end()):
+                priv.append("身份证")
+                st["privacy_hits"]["身份证"] = st["privacy_hits"].get("身份证", 0) + 1
+                priv_hits.append(("身份证", m.group(0),
+                                  _hit_ctx(_prose_idc, m.start(), m.end())))
+                break
         if priv:
             st["privacy"] += 1
             st["lq"]["LQ4_隐私未脱敏"] += 1
-            self.add("ERROR", rid, "隐私泄露", "; ".join(priv[:3]) + "(§6 须 x 占位)")
+            detail = "; ".join(priv[:3]) + "(§6 须 x 占位)"
+            # 命中原文: 值 + ±60 字符上下文(§6 明文 0 容忍, 便于人工复核属实/误报)
+            if priv_hits:
+                detail += "; 命中: " + " | ".join(
+                    f"[{t}]{v} «{ctx}»" for t, v, ctx in priv_hits[:3])
+            # 2026-09-19 口径(客户确认): 隐私命中统一 WARN(告警级, 需人工复核),
+            # 不再判 ERROR — 自披露/示例/代码值占比高, 0 容忍按告警+人工复核执行。
+            self.add("WARN", rid, "隐私泄露", detail)
         # 银行卡: 代码问答数据中无真实卡号场景(SO 问 Linux/JSON/SQL 数字串), Luhn 命中
         # 100% 为误报(FileID/hex/ID/计数, 实测 USB 设备路径/JSON id/SQL 计数 6/6 误报)。
         # 按 §9 QC 实践口径: 仅统计不告警, 不再产生"疑似银行卡"WARN 噪音。
@@ -781,8 +1505,14 @@ class QaQC:
             nxt = prose_text[i + len(ip):i + len(ip) + 1]
             if nxt in ("_", "-", "/", ".") or prose_text[max(0, i - 1):i] == "`":
                 continue  # 文件名/IP 段/内联代码示例
+            if _ip_doc_excluded(ip, prose_text, i):
+                continue  # 文档标准示例网段/VirtualBox/Docker/示例语境
             ips_real.append(ip)
         if ips_real:
+            # 全量 IP 值收集(报告附录展示原文, 供人工复核是否属 §6 代码示例豁免)
+            for ip in ips_real:
+                i = prose_text.find(ip)
+                self.ip_detail.append((rid, ip, _hit_ctx(prose_text, i, i + len(ip), 40)))
             self.add("WARN", rid, "疑似内网IP",
                      f"正文含私网地址 {ips_real[0]} 等 {len(ips_real)} 处(§6 须 x 占位, 代码示例除外)")
 
@@ -796,16 +1526,35 @@ class QaQC:
         # 否则奇数 fence 的记录在 combined 拼接下正文判定与整改不一致, 复检残留)。
         # 只判"真实资源": 外链图/内嵌 base64/blob 失效引用。
         # 代码示例、文件扩展名、"讨论 <img> 标签本身"的文字提及均豁免(误报根治)。
-        if any(has_non_text_resource(strip_fenced(t.get(fld) or ""))
-               for t in message if isinstance(t, dict)
-               for fld in ("question", "answer")):
+        # 命中原文: 逐字段提取代码块外真实非文本资源原串(img/md-img/blob/base64 前 80 字符)
+        _nt_hits = []
+        for t in message:
+            if not isinstance(t, dict):
+                continue
+            for fld in ("question", "answer"):
+                _body = strip_fenced(t.get(fld) or "")
+                for _rx in (RE_EXT_IMG, RE_EXT_MD_IMG, RE_BLOB_REF, RE_BASE64_EMBED):
+                    for _m in _rx.finditer(_body):
+                        _nt_hits.append(f"[{fld}] {_m.group(0)[:80]}")
+                        if len(_nt_hits) >= 3:
+                            break
+                    if len(_nt_hits) >= 3:
+                        break
+            if len(_nt_hits) >= 3:
+                break
+        if _nt_hits:
             self.add("ERROR", rid, "非文本资源残留",
-                     "正文含外链图片/base64 内嵌/blob 失效引用(§4.1 须剔除; 代码块与 <img> 文字提及已豁免)")
+                     "正文含外链图片/base64 内嵌/blob 失效引用(§4.1 须剔除; 代码块与 <img> 文字提及已豁免)"
+                     + "; 命中: " + " | ".join(_nt_hits))
 
         # E12 乱码(§4.1 占位符、乱码直接剔除)
-        if RE_MOJIBAKE.search(full_text):
+        _mb = RE_MOJIBAKE.search(full_text)
+        if _mb:
             st["lq"]["LQ6_占位符乱码模板"] += 1
-            self.add("ERROR", rid, "乱码字符", "含 U+FFFD 替换字符(编码损坏, §4.1 应剔除)")
+            # 命中原文: U+FFFD 位置 ±40 字符上下文(便于人工确认损坏范围/来源)
+            _mb_ctx = _hit_ctx(full_text, _mb.start(), _mb.end(), 40).replace("\ufffd", "[U+FFFD]")
+            self.add("ERROR", rid, "乱码字符",
+                     f"含 U+FFFD 替换字符(编码损坏, §4.1 应剔除); 命中: «{_mb_ctx}»")
 
         # W5 占位符串(§4.1 大量占位符类灌水) —— 计算逻辑保留但不计数。
         # 校准: SO 问答中 xxxxx 是"省略内容/示例输出"的正常表达(表格画线、XML 占位、
@@ -937,6 +1686,37 @@ class QaQC:
             dom = str(dom_raw or "?").split("/")[0].strip()
         st["domain"][dom] = st["domain"].get(dom, 0) + 1
 
+        # ---- 深度语义层 N1-N9(合并自 code_qa_deep_qc.py, 默认 WARN) ----
+        self._run_deep(rid, rec)
+
+    def _run_deep(self, rid, rec):
+        """跑 N1-N9 语义层: 记录命中/样例, 抽 N4 token 复算, 累计 question_time 供 N8。
+        命中默认记 WARN(--fail-on-warn 时记 ERROR); N8 为全局规则, 在 check_global 判定。"""
+        issues, ctx = deep_check_record(rec, dataset_class=self.dataset_class)
+        for k, detail in issues.items():
+            if k == "N8_时间字段共模":
+                continue  # 全局规则, 由 check_global 判定
+            self.deep_rule_hits[k] += 1
+            if len(self.deep_rule_samples[k]) < 6:
+                self.deep_rule_samples[k].append(f"{rid}: {str(detail)[:60]}")
+            self.add("ERROR" if self.fail_on_warn else "WARN", rid, k,
+                     f"{detail}(深度语义层)")
+        # N4 token 复算抽检(按声明 tokenizer=o200k_base 抽样复算 q/a token)
+        if self.token_sample > 0 and self._deep_enc is not None:
+            m = ctx["meta"]
+            if "o200k" in str(m.get("tokenizer") or "") and \
+                    self._deep_rng.random() < self.token_sample:
+                rq = len(self._deep_enc.encode(ctx["q"].strip(), disallowed_special=()))
+                ra = len(self._deep_enc.encode(ctx["a"].strip(), disallowed_special=()))
+                if m.get("question_tokens") != rq or m.get("answer_tokens") != ra:
+                    self.deep_tok_mismatch += 1
+                    if len(self.deep_rule_samples["N4_token复算偏差"]) < 6:
+                        self.deep_rule_samples["N4_token复算偏差"].append(
+                            f"{rid}: 存 q={m.get('question_tokens')} a={m.get('answer_tokens')} "
+                            f"复算 q={rq} a={ra}")
+        # N8 用: 累计 question_time 取值分布
+        self.deep_qtime[str((ctx["meta"] or {}).get("question_time"))] += 1
+
     # ---- 近似重复检测(§4.2 LQ7) ----
     def _detect_near_dup(self):
         """稀有 5-gram 倒排召回候选对 → 精确 Jaccard 验证(≥0.6 记 WARN)。
@@ -1051,6 +1831,18 @@ class QaQC:
         row("WARN" if c["bracket_bad"] else "PASS",
             f"代码块括号失衡 {c['bracket_bad']} 块", "非 Python 语言粗检(字符串内括号可能误报, 需复核)")
         row("PASS", "总token(标注/估算)", f"{st['tokens_sum']:,}")
+
+        # ---- 深度层全局规则 N8 时间字段共模(全局判定, 默认 WARN 不计入退出码) ----
+        # question_time 单一取值占比 >5% → 疑似"题目时间"口径(而非真实提问时间)
+        if n >= 100 and self.deep_qtime:
+            top_qtime, top_qn = self.deep_qtime.most_common(1)[0]
+            if top_qn / n > 0.05:
+                self.deep_rule_hits["N8_时间字段共模"] = top_qn
+                self.deep_rule_samples["N8_时间字段共模"] = [
+                    f"question_time={top_qtime} 占 {top_qn}/{n} ({top_qn / n:.1%})"]
+        # N4 token 复算偏差(全局汇总)
+        if self.deep_tok_mismatch:
+            self.deep_rule_hits["N4_token复算偏差"] = self.deep_tok_mismatch
         return rows
 
     # ---- §10 八、问题整改明细 ----
@@ -1219,17 +2011,19 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     L.append("")
 
     # ---- 六、脱敏校验 ----
-    L.append("## 六、脱敏校验(§10; §6 匿名化合规, 明文 0 容忍)")
+    L.append("## 六、脱敏校验(§10; §6 匿名化合规)")
     L.append("")
     L.append("| 检查项 | 结果 | 说明 |")
     L.append("|:---|:---:|:---|")
-    L.append(f"| 隐私明文泄露 | {'❌' if st['privacy'] else '✅'} | "
-             f"{st['privacy']}/{n} 条(§6 全量自动化扫描, 明文即违规) |")
+    L.append(f"| 隐私明文泄露 | {'⚠️' if st['privacy'] else '✅'} | "
+             f"{st['privacy']}/{n} 条(全量自动化扫描, 2026-09-19 起命中统一为 WARN 告警, "
+             f"明细含命中原文+上下文, 逐条人工复核) |")
     if st["privacy_hits"]:
         hits_desc = "; ".join(f"{k} {v} 处" for k, v in sorted(st["privacy_hits"].items()))
     else:
         hits_desc = "未检出明文隐私"
-    L.append(f"| 命中类型分布 | ✅ | {hits_desc} |")
+    L.append(f"| 命中类型分布 | {'⚠️' if st['privacy_hits'] else '✅'} | "
+             f"{hits_desc}(命中逐条列入 WARN 明细, 人工复核) |")
     _ip_n, _soc_n = (qc._item_cnt.get("疑似内网IP", 0),
                      qc._item_cnt.get("疑似社交账号", 0))
     if _ip_n or _soc_n:
@@ -1261,6 +2055,36 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
         L.append(f"| {mark} {k} | {v} | {lq_desc[k]} |")
     L.append("")
 
+    # ---- 七·深度语义层(N1-N9, 合并自 code_qa_deep_qc.py) ----
+    _forum = qc.dataset_class == "forum"
+    _suppressed = {"N1_无代码块", "N3_语言标注不符", "N6_上标压平可疑"} if _forum else set()
+    _class_cn = {"code": "编程题集(答案应含代码)",
+                 "forum": "论坛问答(纯文字答案合法)"}.get(qc.dataset_class, qc.dataset_class)
+    _deep_warn_total = sum(qc.deep_rule_hits[k] for k in RULE_DESC)
+    L.append("## 七·深度语义层(N1-N9, code_qa_deep_qc 并入)")
+    L.append("")
+    L.append(f"> 数据集类型: {_class_cn} | token 抽检比例 {qc.token_sample:g} | "
+             f"深度层 WARN 合计 {_deep_warn_total} 项"
+             f"{'(--fail-on-warn 已转 ERROR)' if qc.fail_on_warn else '(默认 WARN, 不影响主脚本退出码)'}")
+    L.append("")
+    L.append("| 规则 | 说明 | 命中数 | 占比 | 样例 |")
+    L.append("|:---|:---|---:|---:|:---|")
+    for k in RULE_DESC:
+        h = qc.deep_rule_hits[k]
+        if k in _suppressed:
+            L.append(f"| {k} | {RULE_DESC[k]} | (不适用) | — | 论坛类按数据集类型豁免 |")
+            continue
+        sample = "<br>".join(esc(s) for s in qc.deep_rule_samples[k][:4]) or "—"
+        L.append(f"| {k} | {RULE_DESC[k]} | {h} | {h / (n or 1):.2%} | {sample} |")
+    L.append("")
+    if _forum:
+        L.append("> 本批按**论坛问答**类型运行: N1/N3/N6 不适用(论坛答案可为纯文字, "
+                 "primary_language 为话题标签而非答案代码语言), 已豁免不计入。")
+    else:
+        L.append("> N5 截断嫌疑为启发式(句中收尾), 需与网页原文二次确认; "
+                 "N3 语言不符在 LeetCode 类(题解含多语言代码块)会偏多, 请按数据集解读。")
+    L.append("")
+
     # ---- 八、问题整改明细 ----
     L.append("## 八、问题整改明细(§10)")
     L.append("")
@@ -1288,21 +2112,47 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
                  f"(已整改/{len(resolved) + len(unresolved)} 历史问题)")
         L.append("")
 
-    # ---- 九/十、明细 ----
+    # ---- 九/十、明细(可折叠: 默认显示前 10 条, <details> 展开看全部) ----
+    _PREVIEW = 10
+    _FULL_CAP = 5000  # 展开后最多渲染行数, 防超长报告
+    # 内网 IP 汇总行(只列首个 IP+"等 N 处")与逐 IP 原文行冗余 → 去汇总行,
+    # 只保留逐 IP 原文行(每个命中的 IP 独立一条, 均带 ±40 上下文), 避免"部分 IP 无原文"。
+    _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
+    for rid, ip, ctx in qc.ip_detail:
+        _warn_rows.append((rid, "疑似内网IP", f"{ip} «{ctx}»"))
+    _warn_rows.sort(key=lambda r: (r[1], r[0]))
+
     def dump_section(title, rows):
         L.append(f"## {title}")
         L.append("")
         if not rows:
             L.append("无")
+            L.append("")
+            return
+        if len(rows) > _PREVIEW:
+            L.append(f"> 共 {len(rows)} 条 — 下方默认显示前 {_PREVIEW} 条, "
+                     f"点击「展开剩余 {len(rows) - _PREVIEW} 条」查看全部。")
         else:
-            L.append("| ID | 检查项 | 详情 |")
-            L.append("|:---|:---|:---|")
-            for rid, item, detail in rows[:300]:
+            L.append(f"> 共 {len(rows)} 条(全部列出)。")
+        L.append("")
+        L.append("| ID | 检查项 | 详情 |")
+        L.append("|:---|:---|:---|")
+        for rid, item, detail in rows[:_PREVIEW]:
+            L.append(f"| {rid} | {item} | {esc(detail)} |")
+        if len(rows) > _PREVIEW:
+            L.append("")
+            L.append(f"<details><summary>展开剩余 {len(rows) - _PREVIEW} 条</summary>")
+            L.append("")
+            for rid, item, detail in rows[_PREVIEW:_FULL_CAP]:
                 L.append(f"| {rid} | {item} | {esc(detail)} |")
+            if len(rows) > _FULL_CAP:
+                L.append(f"| … | | 其余 {len(rows) - _FULL_CAP} 条略(见 HTML 报告) |")
+            L.append("")
+            L.append(f"</details>")
         L.append("")
 
     dump_section("九、ERROR 明细(必须整改)", qc.error_rows)
-    dump_section("十、WARN 明细(建议复核)", qc.warn_rows)
+    dump_section("十、WARN 明细(建议复核; 隐私/内网 IP 命中含原文上下文)", _warn_rows)
 
     # ---- 附录: 分布 ----
     for title, key in (("附录A、编程语言分布(§5.1 单一语言 ≤30%)", "lang"),
@@ -1395,15 +2245,18 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     # 六、脱敏校验
     hits_desc = ("; ".join(f"{k} {v} 处" for k, v in sorted(st["privacy_hits"].items()))
                  if st["privacy_hits"] else "未检出明文隐私")
-    dim_html("六、脱敏校验(§10; §6 匿名化合规, 明文 0 容忍)", [
-        ("隐私明文泄露", "❌" if st["privacy"] else "✅",
-         f"{st['privacy']}/{n} 条(§6 全量自动化扫描, 明文即违规)"),
-        ("命中类型分布", "✅", hits_desc),
-        ("内网 IP/社交账号",
-         "⚠️" if (qc._item_cnt.get("疑似内网IP", 0) + qc._item_cnt.get("疑似社交账号", 0)) else "✅",
+    # 脱敏校验: 2026-09-19 客户口径 — 每项有命中均为 ⚠️ WARN 告警(不判 ❌ ERROR),
+    # 命中原文并入 §十 WARN 明细节, 逐条人工复核; 仅"无命中"才 ✅。
+    _dim_ip_soc = (qc._item_cnt.get("疑似内网IP", 0) + qc._item_cnt.get("疑似社交账号", 0))
+    dim_html("六、脱敏校验(§10; §6 匿名化合规)", [
+        ("隐私明文泄露", "⚠️" if st["privacy"] else "✅",
+         f"{st['privacy']}/{n} 条(全量自动化扫描, 2026-09-19 起命中统一为 WARN 告警, "
+         f"明细含命中原文+上下文, 逐条人工复核)"),
+        ("命中类型分布", "⚠️" if st["privacy_hits"] else "✅",
+         hits_desc + "(命中逐条列入 WARN 明细, 人工复核)"),
+        ("内网 IP/社交账号", "⚠️" if _dim_ip_soc else "✅",
          (f"检出 内网 {qc._item_cnt.get('疑似内网IP', 0)} / 社交 {qc._item_cnt.get('疑似社交账号', 0)} 条"
-          "(代码示例语境误报率高, 检出时人工复核)" if qc._item_cnt.get("疑似内网IP", 0)
-          or qc._item_cnt.get("疑似社交账号", 0) else "0 检出(内网 10.x 为 §6 合规替换值; "
+          "(代码示例语境误报率高, 检出时人工复核)" if _dim_ip_soc else "0 检出(内网 10.x 为 §6 合规替换值; "
           "变量名 qq/AVX 指令集等算法语境不误报)")),
     ])
     # 七、低质样本过滤记录
@@ -1432,14 +2285,38 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     else:
         H.append(tr(["无待整改问题", "", "", "", ""], ""))
     H.append("</table>")
-    H.append("<h2>九、ERROR 明细</h2><table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
-    for r in qc.error_rows[:300]:
-        H.append(tr(r, "error"))
-    H.append("</table>")
-    H.append("<h2>十、WARN 明细</h2><table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
-    for r in qc.warn_rows[:300]:
-        H.append(tr(r, "warn"))
-    H.append("</table></body></html>")
+    # 九/十、明细(与 MD 一致: 默认显示前 10 条, <details> 展开看全部, 上限 5000)
+    _PREVIEW = 10
+    _FULL_CAP = 5000
+    _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
+    for rid, ip, ctx in qc.ip_detail:
+        _warn_rows.append((rid, "疑似内网IP", f"{ip} «{ctx}»"))
+    _warn_rows.sort(key=lambda r: (r[1], r[0]))
+
+    def detail_html(title, rows, cls):
+        H.append(f"<h2>{esc(title)}</h2>")
+        if not rows:
+            H.append("<p>无</p>")
+            return
+        if len(rows) > _PREVIEW:
+            H.append(f"<p>共 {len(rows)} 条 — 默认显示前 {_PREVIEW} 条, 点击展开看全部。</p>")
+        else:
+            H.append(f"<p>共 {len(rows)} 条(全部列出)。</p>")
+        H.append("<table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
+        for r in rows[:_PREVIEW]:
+            H.append(tr(r, cls))
+        H.append("</table>")
+        if len(rows) > _PREVIEW:
+            H.append(f"<details><summary>展开剩余 {len(rows) - _PREVIEW} 条</summary>"
+                     f"<table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
+            for r in rows[_PREVIEW:_FULL_CAP]:
+                H.append(tr(r, cls))
+            if len(rows) > _FULL_CAP:
+                H.append(tr(["…", "", f"其余 {len(rows) - _FULL_CAP} 条略(见 MD 报告)"], cls))
+            H.append("</table></details>")
+    detail_html("九、ERROR 明细(必须整改)", qc.error_rows, "error")
+    detail_html("十、WARN 明细(建议复核; 隐私/内网 IP 命中含原文上下文)", _warn_rows, "warn")
+    H.append("</body></html>")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write("\n".join(H))
     return md_path, html_path, ok
@@ -1461,9 +2338,20 @@ def main():
     ap.add_argument("--no-near-dup", action="store_true",
                     help="关闭近似重复检测(§4.2 LQ7)。大数据集流式质检建议开启, "
                          "避免 5-gram shingles 集合占用大量内存; 全量近似查重请用 text_dup_precise_qc.py")
-    ap.add_argument("--exempt-multi-turn", action="store_true",
-                    help="构造性单轮数据集(如 SO 无多轮场景)豁免多轮占比: "
-                         "多轮 0%% 单列为 WARN 不触发整体退回(需换源补采, 见 README 口径说明)")
+    ap.add_argument("--exempt-multi-turn", "--no-exempt-multi-turn",
+                    dest="exempt_multi_turn",
+                    action=argparse.BooleanOptionalAction, default=True,
+                    help="多轮占比 ≥10%% 红线的默认豁免(默认开): 构造性单轮数据集"
+                         "(SO/编程题集等无多轮场景)多轮 0%% 单列为 WARN 不触发整体退回"
+                         "(需换源补采, 见 README 口径说明); --no-exempt-multi-turn "
+                         "显式关闭豁免, 多轮 0%% 判 ERROR(适用要求多轮的工单/追答类数据)")
+    ap.add_argument("--dataset-class", default="forum", choices=["code", "forum"],
+                    help="深度语义层 N1-N9 的数据集类型: code=编程题集(答案应含代码, 默认); "
+                         "forum=论坛问答(纯文字答案合法, 抑制 N1/N3/N6)")
+    ap.add_argument("--token-sample", type=float, default=0.0, metavar="P",
+                    help="深度层 N4 token 复算抽检比例(如 0.01=1%%), 0=关闭(默认; 贵)")
+    ap.add_argument("--fail-on-warn", action="store_true",
+                    help="深度语义层 WARN 转 ERROR(接 CI; 默认仅 WARN 不影响主脚本退出码)")
     args = ap.parse_args()
 
     base = os.path.dirname(os.path.abspath(__file__))
@@ -1496,7 +2384,9 @@ def main():
         else:
             total_checked += tn
     near_dup_ok = (not args.no_near_dup) and total_checked <= NEAR_DUP_SHINGLE_CAP
-    qc = QaQC(near_dup=near_dup_ok, exempt_multi_turn=args.exempt_multi_turn)
+    qc = QaQC(near_dup=near_dup_ok, exempt_multi_turn=args.exempt_multi_turn,
+              dataset_class=args.dataset_class, token_sample=args.token_sample,
+              fail_on_warn=args.fail_on_warn)
     if not near_dup_ok and not args.no_near_dup:
         log.warning("检查记录数 %d > 近似查重上限 %d, 自动跳过近似重复检测(流式 O(1) 内存, "
                     "全量近似查重请用 text_dup_precise_qc.py 或分片终检)",
