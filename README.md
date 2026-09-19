@@ -18,12 +18,12 @@
 
 ## 组件
 
-| 脚本 | 用途 |
-|---|---|
-| `code_qa_qc.py` | 代码问答数据集质检：验收硬指标 / 抽样代码功能校验 / 问答真实性 / 重复率 / 脱敏 / 低质过滤 / 整改明细（规范书 §10 全结构报告）|
-| `blog_qc.py` | 安全技术博客数据集质检：权威源覆盖率 / 图片处理 / 匿名化与去武器化 / CVE 标注 |
-| `vuln_commit_qc.py` | 漏洞修复 commit 数据集质检：diff 自洽还原 / 代码四件套完整性 / CVE 关联 / License 白名单 |
-| `text_dup_precise_qc.py` | 文本重复精确 / 近似检测（字符级 MinHash + LSH 召回 + Jaccard 验证，与主脚本的 MD5 判重互补）|
+| 脚本                     | 用途                                                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `code_qa_qc.py`          | 代码问答数据集质检：验收硬指标 / 抽样代码功能校验 / 问答真实性 / 重复率 / 脱敏 / 低质过滤 / 整改明细（规范书 §10 全结构报告） |
+| `blog_qc.py`             | 安全技术博客数据集质检：权威源覆盖率 / 图片处理 / 匿名化与去武器化 / CVE 标注                                                 |
+| `vuln_commit_qc.py`      | 漏洞修复 commit 数据集质检：diff 自洽还原 / 代码四件套完整性 / CVE 关联 / License 白名单                                      |
+| `text_dup_precise_qc.py` | 文本重复精确 / 近似检测（字符级 MinHash + LSH 召回 + Jaccard 验证，与主脚本的 MD5 判重互补）                                  |
 
 ## ⚠️ 近似查重非必要不进行
 
@@ -31,23 +31,23 @@
 
 资源开销现状（`text_dup_precise_qc.py` 已按下列方式优化）：
 
-| 资源 | 现状 | 说明 |
-|---|---|---|
-| 内存 | 已优化 | ① 逐行流式读取，不再整文件载入；② 不再全量驻留每个文档的 n-gram 集合（原为最大开销，单文档 1 万字符 ≈ 64 万字节），改为**按需计算 + 有界 LRU 缓存**（`--ngram-cache`，默认 200 个文档）；③ 只保留 `n × num_perm` 的 uint32 签名矩阵（约 1KB/条）。**仍需常驻**：规范化正文（约 1~3 字节/字符，base64 图片载荷已剔除）|
-| CPU | 已优化 | ① 签名阶段不再构造 n-gram 集合（取 min 与去重无关，结果不变）；② 候选对先按签名估计预筛（`--prefilter-margin`，默认 0.2），与阈值差距大的候选对不做精确 Jaccard；③ 组内两两 Jaccard 复用 L2 已算出的分数，全文相同的对直接判定为 1.0。**仍有平方级**：LSH 桶内两两枚举、组内两两比较（已对超大组打印告警）|
-| 磁盘 | 未优化 | 报告逐组展开**全部成员明细**且无条数上限（与主脚本"明细封顶 300 条"不同），重复组多时单份报告可达数百 MB；报告写入后会在终端打印实际大小 |
-| IO | 已优化 | 读取阶段改为二进制逐行流式解析，内存与文件大小解耦 |
+| 资源 | 现状   | 说明                                                                                                                                                                                                                                                                                                                  |
+| ---- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 内存 | 已优化 | ① 逐行流式读取，不再整文件载入；② 不再全量驻留每个文档的 n-gram 集合（原为最大开销，单文档 1 万字符 ≈ 64 万字节），改为**按需计算 + 有界 LRU 缓存**（`--ngram-cache`，默认 200 个文档）；③ 只保留 `n × num_perm` 的 uint32 签名矩阵（约 1KB/条）。**仍需常驻**：规范化正文（约 1~3 字节/字符，base64 图片载荷已剔除） |
+| CPU  | 已优化 | ① 签名阶段不再构造 n-gram 集合（取 min 与去重无关，结果不变）；② 候选对先按签名估计预筛（`--prefilter-margin`，默认 0.2），与阈值差距大的候选对不做精确 Jaccard；③ 组内两两 Jaccard 复用 L2 已算出的分数，全文相同的对直接判定为 1.0。**仍有平方级**：LSH 桶内两两枚举、组内两两比较（已对超大组打印告警）            |
+| 磁盘 | 未优化 | 报告逐组展开**全部成员明细**且无条数上限（与主脚本"明细封顶 300 条"不同），重复组多时单份报告可达数百 MB；报告写入后会在终端打印实际大小                                                                                                                                                                              |
+| IO   | 已优化 | 读取阶段改为二进制逐行流式解析，内存与文件大小解耦                                                                                                                                                                                                                                                                    |
 
 使用建议：
 
-| 场景 | 做法 |
-|---|---|
-| 日常迭代质检 | 主脚本加 `--no-near-dup`，只做精确判重 |
-| 抽样验收（规范书"随机抽检 ≥1%"） | 加 `--sample 1`（固定 seed 可复现），避免全量 |
-| 数据冻结后终检 | 才全量执行 `text_dup_precise_qc.py` |
-| 超大数据集（>10 万条） | 先分片，再逐片执行，避免单进程内存上限 |
-| 内存紧张 | 调小 `--ngram-cache`（更省内存、更多重算）；CPU 紧张则调大 |
-| 要绝对穷尽（不接受任何近似） | 加 `--prefilter-margin 0`，对全部候选对做精确 Jaccard |
+| 场景                             | 做法                                                       |
+| -------------------------------- | ---------------------------------------------------------- |
+| 日常迭代质检                     | 主脚本加 `--no-near-dup`，只做精确判重                     |
+| 抽样验收（规范书"随机抽检 ≥1%"） | 加 `--sample 1`（固定 seed 可复现），避免全量              |
+| 数据冻结后终检                   | 才全量执行 `text_dup_precise_qc.py`                        |
+| 超大数据集（>10 万条）           | 先分片，再逐片执行，避免单进程内存上限                     |
+| 内存紧张                         | 调小 `--ngram-cache`（更省内存、更多重算）；CPU 紧张则调大 |
+| 要绝对穷尽（不接受任何近似）     | 加 `--prefilter-margin 0`，对全部候选对做精确 Jaccard      |
 
 > 关于 `--prefilter-margin`：预筛只跳过"签名估计 Jaccard 比阈值低 0.2 以上"的候选对。按 256 位签名，其估计标准差约 0.03，因此真实相似度 ≥ 阈值却估计低 0.2 以上的概率在 10⁻⁹ 量级，可视为无漏检；若要绝对穷尽则设为 0。
 
@@ -70,7 +70,11 @@
   ],
   "source": "CodeChef",
   "domain": ["codechef", "competitive-programming", "starters-254", "cpp"],
-  "cleaning_status": { "deduplicated": true, "denoised": true, "format_normalized": true },
+  "cleaning_status": {
+    "deduplicated": true,
+    "denoised": true,
+    "format_normalized": true
+  },
   "metadata": {
     "primary_language": "cpp",
     "token_count": 853,
@@ -90,19 +94,19 @@
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `id` | string | 是 | 全局唯一，统一前缀 `QA_2026_` |
-| `message` | array | 是 | 对话轮次数组，每项含非空 `question` / `answer`；多轮即数组多项 |
-| `source` | string | 是 | 数据来源（社区 / 竞赛平台 / 模型名），模型生成的答案须标注来源与模型 |
-| `domain` | array[string] | 是 | 领域标签，样例形如 `[平台, 领域, 赛事, 语言]` |
-| `cleaning_status` | object | 是 | 清洗状态三布尔：`deduplicated` / `denoised` / `format_normalized` |
-| `metadata.primary_language` | string | 是 | 主语言（样例取值：`cpp` / `python` / `go` / `java`）|
-| `metadata.token_count` | int | 是 | 样本 token 数，须与正文估算一致 |
-| `metadata.type` | string | 是 | 固定值 `general_code_qa_dict` |
-| `metadata.ac_*` | string | 否 | 竞赛类来源专有：`ac_contest` / `ac_task` / `ac_submission_id` / `ac_user` / `ac_original_language` / `ac_url` |
-| `metadata.question_time` / `answer_time` | string | 否 | ISO8601 时间 |
-| `metadata.question_tokens` / `answer_tokens` / `tokenizer` | int / string | 否 | 分项 token 数与分词器标识 |
+| 字段                                                       | 类型          | 必填 | 说明                                                                                                          |
+| ---------------------------------------------------------- | ------------- | ---- | ------------------------------------------------------------------------------------------------------------- |
+| `id`                                                       | string        | 是   | 全局唯一，统一前缀 `QA_2026_`                                                                                 |
+| `message`                                                  | array         | 是   | 对话轮次数组，每项含非空 `question` / `answer`；多轮即数组多项                                                |
+| `source`                                                   | string        | 是   | 数据来源（社区 / 竞赛平台 / 模型名），模型生成的答案须标注来源与模型                                          |
+| `domain`                                                   | array[string] | 是   | 领域标签，样例形如 `[平台, 领域, 赛事, 语言]`                                                                 |
+| `cleaning_status`                                          | object        | 是   | 清洗状态三布尔：`deduplicated` / `denoised` / `format_normalized`                                             |
+| `metadata.primary_language`                                | string        | 是   | 主语言（样例取值：`cpp` / `python` / `go` / `java`）                                                          |
+| `metadata.token_count`                                     | int           | 是   | 样本 token 数，须与正文估算一致                                                                               |
+| `metadata.type`                                            | string        | 是   | 固定值 `general_code_qa_dict`                                                                                 |
+| `metadata.ac_*`                                            | string        | 否   | 竞赛类来源专有：`ac_contest` / `ac_task` / `ac_submission_id` / `ac_user` / `ac_original_language` / `ac_url` |
+| `metadata.question_time` / `answer_time`                   | string        | 是   | ISO8601 时间                                                                                                  |
+| `metadata.question_tokens` / `answer_tokens` / `tokenizer` | int / string  | 是   | 分项 token 数与分词器标识                                                                                     |
 
 验收硬指标：单一语言占比 ≤30%、多轮问答占比 ≥10%、重复率 <0.5%、字段全必填、`id` 唯一；正文禁残留图片 / 二进制等非文本资源，隐私须脱敏，禁止混入公开问答数据集与人工 / 大模型合成的虚构提问。
 
@@ -129,19 +133,19 @@
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `id` | string | 是 | 记录 ID（样例为 6 位数字串）|
-| `content` | string | 是 | 正文（Markdown），严禁截断；图片须自包含 |
-| `meta.title` | string | 是 | 标题 |
-| `meta.url` | string | 是 | 原文链接，全局唯一（URL 重复率 ≤2%）|
-| `meta.source_platform` | string | 是 | 来源平台（样例取值：`安全客` / `先知社区`）|
-| `meta.author_or_org` | string | 是 | 作者或机构 |
-| `meta.publish_time` | string | 是 | 发布时间，样例格式 `YYYY-MM-DD HH:MM` |
-| `meta.content_category` | string | 是 | 内容分类（样例取值：`漏洞分析` / `注入` / `RCE` / `恶意样本` / `应急工具`）|
-| `meta.is_original` | bool | 是 | 是否原创 |
-| `meta.primary_languages` | array[string] | 否 | 涉及的编程语言，无则空数组（样例取值：`Python` / `PHP` / `C++` / `汇编`）|
-| `meta.related_cves` | array[string] | 否 | 关联 CVE 编号，无则空数组 |
+| 字段                     | 类型          | 必填 | 说明                                                                        |
+| ------------------------ | ------------- | ---- | --------------------------------------------------------------------------- |
+| `id`                     | string        | 是   | 记录 ID（样例为 6 位数字串）                                                |
+| `content`                | string        | 是   | 正文（Markdown），严禁截断；图片须自包含                                    |
+| `meta.title`             | string        | 是   | 标题                                                                        |
+| `meta.url`               | string        | 是   | 原文链接，全局唯一（URL 重复率 ≤2%）                                        |
+| `meta.source_platform`   | string        | 是   | 来源平台（样例取值：`安全客` / `先知社区`）                                 |
+| `meta.author_or_org`     | string        | 是   | 作者或机构                                                                  |
+| `meta.publish_time`      | string        | 是   | 发布时间，样例格式 `YYYY-MM-DD HH:MM`                                       |
+| `meta.content_category`  | string        | 是   | 内容分类（样例取值：`漏洞分析` / `注入` / `RCE` / `恶意样本` / `应急工具`） |
+| `meta.is_original`       | bool          | 是   | 是否原创                                                                    |
+| `meta.primary_languages` | array[string] | 是   | 涉及的编程语言，无则空数组（样例取值：`Python` / `PHP` / `C++` / `汇编`）   |
+| `meta.related_cves`      | array[string] | 是   | 关联 CVE 编号，无则空数组                                                   |
 
 验收硬指标：权威源覆盖率 ≥95%、必填字段缺失率 ≤1%、重复率（URL / 正文）≤2%、非技术内容占比 ≤0.5%、单一语言占比 ≤30%；正文不得截断（如以 `poc:` / `exp:` / 冒号结尾）、图片不得残留 `blob:` 或未内嵌外链、隐私须匿名化、IOC 须去武器化（Defang）。
 
@@ -184,31 +188,31 @@
 }
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `id` | string | 是 | 样例形如 `<CVE-ID>-<项目名>-<commit 短哈希>` |
-| `text` | string | 是 | 人类可读概览，**只承载属性**（CVE ID / Project / 语言 / 类型 / CWE / 评级 / CVSS / Fix Commit 等）；字段随来源略有差异（样例中存在 9 字段与 13 字段两种模板）|
-| `meta.commit_message` | string | 是 | commit 提交信息 |
-| `meta.vulnerable_code` | string | 是 | 修复前代码（完整文件内容）|
-| `meta.fixed_code` | string | 是 | 修复后代码（完整文件内容）|
-| `meta.unified_diff` | string | 是 | 修复 diff，须为纯 diff 格式 |
-| `meta.cve_id` | string | 是 | CVE 编号 |
-| `meta.project_name` / `meta.project_owner` | string | 是 | 项目名 / 归属组织 |
-| `meta.programming_language` | string | 是 | 编程语言（样例取值：`C++` / `Python` / `JavaScript` / `Java` / `Ruby` / `C#` / `Rust`）|
-| `meta.vulnerability_type` | string | 是 | 漏洞类型（样例取值：`Authorization Bypass` / `OS Command Injection` / `Code Injection` / `XXE` / `Denial of Service` / `Out-of-Bounds Read` / `Use-After-Free` / `Other`）|
-| `meta.cwe_classification` | array[string] | 是 | CWE 列表，样例 1~3 项 |
-| `meta.severity` | string | 是 | 危险等级（`CRITICAL` / `HIGH` / `MEDIUM`）|
-| `meta.cvss_score` / `meta.cvss_vector` | float / string | 是 | CVSS 分值 / 向量 |
-| `meta.fix_commit_hash` | string | 是 | 修复 commit 完整哈希 |
-| `meta.fix_pattern` | string | 是 | 修复模式 |
-| `meta.vulnerability_cause` | string | 是 | 漏洞成因说明 |
-| `meta.license` | string | 是 | 开源许可证（样例取值：`Apache-2.0` / `MIT`），要求 100% 覆盖 |
-| `meta.github_url` | string | 否 | commit 页面链接 |
-| `meta.data_language` / `meta.year` | string | 否 | 数据语言 / CVE 年份（样例：`en`、`2022` / `2024`）|
-| `meta.source_platform` / `meta.collection_time` | string | 否 | 来源与采集时间（样例：`NVD + GitHub`）|
-| `meta.cwe_id` | string | 否 | 主 CWE（`cwe_classification` 的镜像）|
-| `meta.complete_code_fetched` | bool | 是 | 代码是否完整抓取 |
-| `meta.primary_file` | string | 否 | 被修复的主文件路径 |
+| 字段                                            | 类型           | 必填 | 说明                                                                                                                                                                       |
+| ----------------------------------------------- | -------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                            | string         | 是   | 样例形如 `<CVE-ID>-<项目名>-<commit 短哈希>`                                                                                                                               |
+| `text`                                          | string         | 是   | 人类可读概览，**只承载属性**（CVE ID / Project / 语言 / 类型 / CWE / 评级 / CVSS / Fix Commit 等）；字段随来源略有差异（样例中存在 9 字段与 13 字段两种模板）              |
+| `meta.commit_message`                           | string         | 是   | commit 提交信息                                                                                                                                                            |
+| `meta.vulnerable_code`                          | string         | 是   | 修复前代码（完整文件内容）                                                                                                                                                 |
+| `meta.fixed_code`                               | string         | 是   | 修复后代码（完整文件内容）                                                                                                                                                 |
+| `meta.unified_diff`                             | string         | 是   | 修复 diff，须为纯 diff 格式                                                                                                                                                |
+| `meta.cve_id`                                   | string         | 是   | CVE 编号                                                                                                                                                                   |
+| `meta.project_name` / `meta.project_owner`      | string         | 是   | 项目名 / 归属组织                                                                                                                                                          |
+| `meta.programming_language`                     | string         | 是   | 编程语言（样例取值：`C++` / `Python` / `JavaScript` / `Java` / `Ruby` / `C#` / `Rust`）                                                                                    |
+| `meta.vulnerability_type`                       | string         | 是   | 漏洞类型（样例取值：`Authorization Bypass` / `OS Command Injection` / `Code Injection` / `XXE` / `Denial of Service` / `Out-of-Bounds Read` / `Use-After-Free` / `Other`） |
+| `meta.cwe_classification`                       | array[string]  | 是   | CWE 列表，样例 1~3 项                                                                                                                                                      |
+| `meta.severity`                                 | string         | 是   | 危险等级（`CRITICAL` / `HIGH` / `MEDIUM`）                                                                                                                                 |
+| `meta.cvss_score` / `meta.cvss_vector`          | float / string | 是   | CVSS 分值 / 向量                                                                                                                                                           |
+| `meta.fix_commit_hash`                          | string         | 是   | 修复 commit 完整哈希                                                                                                                                                       |
+| `meta.fix_pattern`                              | string         | 是   | 修复模式                                                                                                                                                                   |
+| `meta.vulnerability_cause`                      | string         | 是   | 漏洞成因说明                                                                                                                                                               |
+| `meta.license`                                  | string         | 是   | 开源许可证（样例取值：`Apache-2.0` / `MIT`），要求 100% 覆盖                                                                                                               |
+| `meta.github_url`                               | string         | 是   | commit 页面链接                                                                                                                                                            |
+| `meta.data_language` / `meta.year`              | string         | 是   | 数据语言 / CVE 年份（样例：`en`、`2022` / `2024`）                                                                                                                         |
+| `meta.source_platform` / `meta.collection_time` | string         | 是   | 来源与采集时间（样例：`NVD + GitHub`）                                                                                                                                     |
+| `meta.cwe_id`                                   | string         | 是   | 主 CWE（`cwe_classification` 的镜像）                                                                                                                                      |
+| `meta.complete_code_fetched`                    | bool           | 是   | 代码是否完整抓取                                                                                                                                                           |
+| `meta.primary_file`                             | string         | 是   | 被修复的主文件路径                                                                                                                                                         |
 
 验收硬指标：代码四件套（`commit_message` + `vulnerable_code` + `fixed_code` + `unified_diff`）齐全、`vulnerable_code + unified_diff = fixed_code` 自洽、有效代码 ≥5 行、单一语言占比 ≤30%、近 3 年 CVE 占比 ≥30%、Revert / 无效修复样本 ≤0.5%、不完整性文本 ≤0.5%；须剔除 revert / 纯文档变更，主文件不得误选文档文件（`.md` / `.txt` / `.rst` 等），代码脱敏须用语法安全占位符（严禁纯 `x` 覆盖）。
 
@@ -266,12 +270,12 @@ python text_dup_precise_qc.py 样例数据/*.jsonl
 
 下表是**已知的一类误报**（脚本已内置抑制）。除这些之外，规则化检测仍会产生其他误报与漏报，**任何命中项都需人工复检或大模型逐条确认**。
 
-| 特征串 | 实际含义 |
-|---|---|
-| `avx512vl` 等 | AVX-512 CPU 指令集（编译指令），非社交账号 |
-| `??????` 串 | 题目要求输出的内容，非灌水占位 |
-| 1-3 行围栏块 | 样例输入输出（` ```text `），非残缺代码 |
-| `for (auto &qq : queries)` | C++ 循环变量名，非 QQ 号（账号串须含数字才检出）|
+| 特征串                     | 实际含义                                         |
+| -------------------------- | ------------------------------------------------ |
+| `avx512vl` 等              | AVX-512 CPU 指令集（编译指令），非社交账号       |
+| `??????` 串                | 题目要求输出的内容，非灌水占位                   |
+| 1-3 行围栏块               | 样例输入输出（` ```text `），非残缺代码          |
+| `for (auto &qq : queries)` | C++ 循环变量名，非 QQ 号（账号串须含数字才检出） |
 
 ## License
 
