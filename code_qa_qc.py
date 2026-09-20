@@ -533,6 +533,30 @@ def _hit_ctx(text, s, e, w=60):
     return seg.strip()
 
 
+def _privacy_desensitize(pkind, val):
+    """§6 隐私命中去隐私化脱敏示例(报告明细节整改指引, 同内网 IP 口径展示)。
+    邮箱 local 段整段 → xxxxxx 保域名: sample@email.com -> xxxxxx@email.com
+    手机号 保前 3 后 2, 中间 x: 13333333333 -> 133XXXXXX33
+    身份证 保前 6(地域)后 4, 中间 x: 110105199001011234 -> 110105XXXXXXXX1234
+    仅报告展示用, 数据脱敏按 §6 由上游 x 占位执行。"""
+    if pkind == "邮箱":
+        at = val.rfind("@")
+        if at > 0:
+            return "xxxxxx" + val[at:]
+        return "xxxxxx"
+    if pkind == "手机号":
+        d = re.sub(r"\D", "", val)
+        if len(d) >= 5:
+            return d[:3] + "X" * (len(d) - 5) + d[-2:]
+        return "XXXXX"
+    if pkind == "身份证":
+        d = re.sub(r"\D", "", val)
+        if len(d) >= 10:
+            return d[:6] + "X" * (len(d) - 10) + d[-4:]
+        return "XXXXXXXX"
+    return "xxxxxx"
+
+
 def real_bank_cards(text):
     """银行卡号(Luhn + 边界), 误报根除:
       - 排除小数碎片/标识符内数字串(如 0.6297…/4.6666…)
@@ -1214,11 +1238,18 @@ def deep_check_record(rec, dataset_class="code"):
     if not forum and SUPP_PAT.search(q):
         issues["N6_上标压平可疑"] = SUPP_PAT.search(q).group(0)
 
-    # N9 AI 答案
-    for turn in msg:
-        ans = turn.get("answer") or ""
-        if AI_AUTHOR_PAT.search(ans) or AI_AUTHOR_PAT.search(str(m.get("answer_author") or "")):
-            issues["N9_AI生成答案"] = "answer/author 含 AI 标记"
+    # N9 AI 答案(2026-09-20 收紧: **只扫 author/metadata 署名类字段**, 正文命中不判 —
+    # 论坛语料正文大量"讨论 ChatGPT/GPT generated"属被讨论对象而非答案作者标注,
+    # 全量扫正文会把此类全部误判(样例集 5/5 均为误报); 署名式标记才说明答案由 AI 生成)
+    for k in ("answer_author", "author", "solution_author", "solution", "by"):
+        hv = str(m.get(k) or "")
+        if not hv:
+            continue
+        ha = AI_AUTHOR_PAT.search(hv)
+        if ha:
+            issues["N9_AI生成答案"] = (
+                f"metadata.{k} 含 AI 署名标记 [AI标记]{ha.group(0)}; "
+                f"值: «{_hit_ctx(hv, ha.start(), ha.end(), 40)}»")
             break
 
     return issues, {"q": q, "a": a, "meta": m, "fences": fences}
@@ -1491,10 +1522,11 @@ class QaQC:
             st["privacy"] += 1
             st["lq"]["LQ4_隐私未脱敏"] += 1
             detail = "; ".join(priv[:3]) + "(§6 须 x 占位)"
-            # 命中原文: 值 + ±60 字符上下文(§6 明文 0 容忍, 便于人工复核属实/误报)
+            # 命中原文: 值 + 脱敏整改示例 + ±60 字符上下文(便于人工复核 + 直接给整改口径)
             if priv_hits:
                 detail += "; 命中: " + " | ".join(
-                    f"[{t}]{v} «{ctx}»" for t, v, ctx in priv_hits[:3])
+                    f"[{t}]{v} → 脱敏 `{_privacy_desensitize(t, v)}` «{ctx}»"
+                    for t, v, ctx in priv_hits[:3])
             # 2026-09-19 口径(客户确认): 隐私命中统一 WARN(告警级, 需人工复核),
             # 不再判 ERROR — 自披露/示例/代码值占比高, 0 容忍按告警+人工复核执行。
             self.add("WARN", rid, "隐私泄露", detail)
