@@ -648,6 +648,17 @@ def _ip_doc_excluded(ip, prose_text, i):
     if re.search(r'\bexample\b|e\.g\.|\bsample\b|示例|例如', near):
         return True
     return False
+
+
+def _ip_desensitize(ip):
+    """内网 IP 去隐私化脱敏形式(§6 整改指引, 报告明细节展示用)。
+    保留前两段(网段, 可定位到局域网网段级别), 后两段主机位 x 化:
+    192.168.1.250 -> 192.168.x.x ; 172.16.5.9 -> 172.16.x.x ; 10.20.30.40 -> 10.20.x.x。
+    仅用于报告展示整改口径, 不改数据(数据脱敏按 §6 由上游 x 占位)。"""
+    p = ip.split(".")
+    if len(p) == 4:
+        return f"{p[0]}.{p[1]}.x.x"
+    return ip.replace(".", "x.")
 RE_SOCIAL_ACCT = re.compile(r'(?<![A-Za-z0-9])(?:微信号|weixin|qq号|qq|vx)\s*[:：]\s*(?=[a-zA-Z0-9_-]*\d)[a-zA-Z0-9_-]{5,}', re.I)
 
 # §4.1 低质: 纯文字闲聊(无代码需求/无报错信息)
@@ -1547,14 +1558,19 @@ class QaQC:
                      "正文含外链图片/base64 内嵌/blob 失效引用(§4.1 须剔除; 代码块与 <img> 文字提及已豁免)"
                      + "; 命中: " + " | ".join(_nt_hits))
 
-        # E12 乱码(§4.1 占位符、乱码直接剔除)
-        _mb = RE_MOJIBAKE.search(full_text)
-        if _mb:
+        # E12 乱码(§4.3 低质过滤: "大量占位符、乱码"才剔除)
+        # 2026-09-19 口径(客户确认): 单条 U+FFFD **≤ 5 个不算 ERROR** —— 个别
+        # 编码损坏点(1-5 个)属轻微瑕疵, 不影响问答有效性, 不计入剔除;
+        # **超过 5 个(>5)** 视为"大量乱码"(编码损坏成片/二进制当文本), 判 ERROR 需剔除。
+        _mb = [m for m in RE_MOJIBAKE.finditer(full_text)]
+        if len(_mb) > 5:
             st["lq"]["LQ6_占位符乱码模板"] += 1
-            # 命中原文: U+FFFD 位置 ±40 字符上下文(便于人工确认损坏范围/来源)
-            _mb_ctx = _hit_ctx(full_text, _mb.start(), _mb.end(), 40).replace("\ufffd", "[U+FFFD]")
+            # 命中原文: 首个 U+FFFD 位置 ±40 字符上下文(便于人工确认损坏范围/来源)
+            _m0 = _mb[0]
+            _mb_ctx = _hit_ctx(full_text, _m0.start(), _m0.end(), 40).replace("\ufffd", "[U+FFFD]")
             self.add("ERROR", rid, "乱码字符",
-                     f"含 U+FFFD 替换字符(编码损坏, §4.1 应剔除); 命中: «{_mb_ctx}»")
+                     f"含 U+FFFD 替换字符 **{len(_mb)} 个**(超 5 个, 大量乱码, §4.3 应剔除); "
+                     f"首处命中: «{_mb_ctx}»")
 
         # W5 占位符串(§4.1 大量占位符类灌水) —— 计算逻辑保留但不计数。
         # 校准: SO 问答中 xxxxx 是"省略内容/示例输出"的正常表达(表格画线、XML 占位、
@@ -2119,7 +2135,9 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     # 只保留逐 IP 原文行(每个命中的 IP 独立一条, 均带 ±40 上下文), 避免"部分 IP 无原文"。
     _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
     for rid, ip, ctx in qc.ip_detail:
-        _warn_rows.append((rid, "疑似内网IP", f"{ip} «{ctx}»"))
+        # 附 §6 去隐私化脱敏示例(保留网段, 主机位 x 化), 直接给出整改口径
+        _warn_rows.append((rid, "疑似内网IP",
+                           f"{ip} → 脱敏 `{_ip_desensitize(ip)}` «{ctx}»"))
     _warn_rows.sort(key=lambda r: (r[1], r[0]))
 
     def dump_section(title, rows):
@@ -2290,7 +2308,8 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     _FULL_CAP = 5000
     _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
     for rid, ip, ctx in qc.ip_detail:
-        _warn_rows.append((rid, "疑似内网IP", f"{ip} «{ctx}»"))
+        _warn_rows.append((rid, "疑似内网IP",
+                           f"{ip} → 脱敏 `{_ip_desensitize(ip)}` «{ctx}»"))
     _warn_rows.sort(key=lambda r: (r[1], r[0]))
 
     def detail_html(title, rows, cls):
