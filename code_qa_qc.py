@@ -48,6 +48,7 @@ import logging
 import os
 import random
 import re
+import string
 import sys
 
 # ----------------------------------------------------------------------------
@@ -67,8 +68,13 @@ EMAIL_WHITELIST = ("example.com", "example.org", "example.net", "test.com")
 EMAIL_GH_PATH = ("github.com", "github.io")  # GitHub noreply 邮箱域名
 
 # 隐藏反爬水印: LeetCode 题面注入的隐形 span(opacity:0 / 绝对定位移出视口)
+# ⚠️ 2026-09-20 修复(勿去掉 `(?![\d.])`): 原式 `opacity:\s*0` 是**前缀匹配**,
+#    `opacity: 0.5` / `opacity: 0.8` 等**正常样式值也会命中** ⇒ 误报。
+#    实测: 本批 5 条命中里含正常 React 代码 `<span style={{opacity: 0.5}}>`;
+#    且本检查源自 LeetCode 数据集(GitHub Issues 数据本无题面注入)。
+#    负向断言确保 `0` 之后不再接数字或小数点。
 RE_HIDDEN_SPAN = re.compile(
-    r'<span[^>]*(?:opacity:\s*0|position:\s*absolute[^>"]*left:\s*-?\d{4,})[^>]*>.*?</span>', re.I | re.S)
+    r'<span[^>]*(?:opacity:\s*0(?![\d.])|position:\s*absolute[^>"]*left:\s*-?\d{4,})[^>]*>.*?</span>', re.I | re.S)
 
 # §4.1 过滤非文本资源: 仅在"代码块外正文"里检测, 且只判"真实非文本资源"(破坏自包含/
 # 失效引用/嵌入二进制)。正文里"讨论 <img> 标签本身"的文字引用(如 `the IMG tag`)不判 —— 误报根治。
@@ -623,7 +629,11 @@ def looks_like_real_email(v):
         return False
     if len(local) < 2 or not any(c.isalpha() for c in local):
         return False
-    if local.replace("x", "") == "":      # 全 x 已脱敏占位(如 data@xxx@classes.dex 的 xxx 段)
+    # 已脱敏占位: local 由 x 及点构成(纯 xxx / xxx.xxxxxx / x.x 等)。
+    # 2026-09-20 SO v6 重脱敏后邮箱 local 统一替换为 xxx.xxxxxx 形态, 纯 x 判定
+    # (replace x 后须为空)对含点 x 串漏判 → 脱敏值反被判成隐私泄露, 故同时剥掉点号。
+    # 真实人名邮箱(如 j.doe / xiaoming.wang / x.wild? 见下)含实义字母, 剥 x/点后非空, 不受影响。
+    if local.lower().replace("x", "").replace(".", "") == "":
         return False
     # 校准(LeetCode 题解误报): 已 Defanging/脱敏的图片文件名, 形如
     #   RQSA%7BYHRQxxxxx@xxxxxxxx.png
@@ -683,6 +693,32 @@ def _ip_desensitize(ip):
     if len(p) == 4:
         return f"{p[0]}.{p[1]}.x.x"
     return ip.replace(".", "x.")
+
+
+def _social_masked(val):
+    """2026-09-20 口径: 判定社交特征串是否已脱敏(§6 x 占位)。
+    去掉键前缀(QQ/微信号/vx 等)+冒号后看值体: "保首尾数字"式(542xxxx16)
+    先剥首尾数字再判中段是否纯 x; 全串 x(xxxxxxx)天然命中。值中段含 x
+    即视为已脱敏(不可还原, 无需再复核); 含其他实义字符(abc1234)不算脱敏
+    → 仍报明细。真实 QQ/微信号为纯数字且无 x, 不会被误判为已脱敏。
+    """
+    core = re.sub(r'(?i)^(?:微信号|weixin|weibo|vx|qq号|qq)\s*[:：]\s*', '', val).strip()
+    core = core.strip(string.digits)   # 剥首尾数字: "保首尾"式脱敏(542xxxx16) -> 中段 xxxxx
+    return core != "" and set(core) <= set("x")
+
+
+def _social_desensitize(val):
+    """§6 社交账号脱敏示例(报告明细节整改指引, 仅展示, 不改数据)。
+    数字值: 保前 3 后 2, 中间 x(与手机号口径一致): 542278416 -> 542xxxx16
+    非数字值(微信号等): 整串 x 化。已脱敏值原样返回。"""
+    core = re.sub(r'(?i)^(?:微信号|weixin|weibo|vx|qq号|qq)\s*[:：]\s*', '', val).strip()
+    if _social_masked(val):
+        return val
+    if core.isdigit():
+        if len(core) >= 5:
+            return val.replace(core, core[:3] + "x" * (len(core) - 5) + core[-2:])
+        return val.replace(core, "x" * len(core))
+    return val.replace(core, "x" * max(len(core), 5))
 RE_SOCIAL_ACCT = re.compile(r'(?<![A-Za-z0-9])(?:微信号|weixin|qq号|qq|vx)\s*[:：]\s*(?=[a-zA-Z0-9_-]*\d)[a-zA-Z0-9_-]{5,}', re.I)
 
 # §4.1 低质: 纯文字闲聊(无代码需求/无报错信息)
@@ -725,8 +761,11 @@ LOW_TIER_MODELS = ("gpt-3.5", "gpt3.5", "gpt-4o-mini", "gpt-4-mini",
 # 疑似合成提问特征(§4.1: 禁止人工/大模型合成虚构提问; 保守特征串)
 # 校准: 移除 "sample question"/"示例问题" —— 它们是 Web 页面/游戏模板里的普通词
 # (实测 4/4 误报: textarea 示例、多选游戏题面、jsfiddle 模板), 不构成合成特征。
+# ⚠️ 2026-09-20 再校准: 移除 "假设你是" —— 它是**算法题/游戏题面的规则用语**
+# (实测误报: Tcdian/keep#43「现在, 假设你是「二号」玩家…」= LeetCode 类博弈题面),
+# 与"AI 提示词"无关。保留的标记须含"AI/扮演/模拟"等明确合成意图。
 SYNTHETIC_Q_MARKERS = ("作为一个ai", "作为一名ai", "ai语言模型", "示例提问",
-                        "假设你是", "请你扮演", "请模拟一个")
+                        "请你扮演", "请模拟一个")
 
 # 违规内容关键词(§8 禁止内容, 抽样级粗筛)
 FORBIDDEN_KW = ("挖矿木马", "病毒样本下载", "社工库", "银行卡四件套", "赌博网站搭建",
@@ -878,21 +917,40 @@ def _closed_blocks_in_field(text):
     return out
 
 
-def _strip_for_brackets(code):
-    """剥离注释与字符串字面量, 仅保留代码骨架用于括号平衡粗检。
+def _strip_for_brackets(code, lang=""):
+    """剥离注释与字符串字面量, 仅保留“代码骨架”用于括号平衡粗检。
 
-    校准: 原实现直接对整块 count(), 把 // 行注释、/* */ 块注释、"..."/'...'
-    字符串内的括号也计入, 造成误报(实测 LeetCode 题解注释 [i+1,n)) 、
-    被注释掉的 //for(int j=0;...){ 、字符字面量 '}' 等)。括号平衡只应对
-    "代码骨架"判定, 注释/字符串里的括号不构成语法结构。
-    单遍状态机: 正常/行注释/块注释/双引号串/单引号串, 处理反斜杠转义。
+    lang: 代码块语言标签(小写), **仅用于判定是否启用 Rust 生命周期规则** ——
+          该规则对其它语言是灾难(见下 ①), 必须按语言 gating。
+
+    校准历史:
+      · 原实现直接 count() 整块 ⇒ 注释/字符串里的括号也计入, 误报
+        (LeetCode 题解注释里的 [i+1,n)、被注释掉的 //for(...){、字符字面量 '}' )。
+      · 2026-09-20 一轮: URL 里的 // 不作行注释起点(回看连续 / 串, 前一个字符是 : ⇒ scheme)。
+      · 2026-09-20 二轮(本版) —— 抽样审查 30 个命中块后发现 **约 1/3 是脚本误报**, 逐类修:
+          ① Rust 生命周期 'a / 'static: 单引号后随标识符首字符、且再后面不是闭合引号
+             ⇒ 不是字符字面量(否则整行后续括号被当字符串内容吞掉)。
+             实测 <'a, P> 原文 ()15/15 平衡 → 剥壳后 12/15。
+          ② 三引号 raw string(Kotlin/Scala \"\"\" / Python ''')跨行 ⇒ 整段识别并剥离,
+             否则被当普通 " 反复切换, 使原文平衡的代码变不平衡。
+          ③ 未闭合字符串回吐: 作者漏写闭合引号时, 该行后续括号会被当字符串内容吞掉。
+             现在遇到换行仍未闭合 ⇒ 视作非字符串, 把缓冲内容原样回吐。
+             实测 php $pool->getItem('foo', ['ns1]); 原文 ()2/2 平衡 → 剥壳 2/0。
+    单遍状态机: 正常 / 行注释 / 块注释 / 字符串(含三引号), 处理反斜杠转义。
     """
+    # ⚠️ Rust 生命周期规则**只对 rust 块启用**: 若对所有语言生效, 会把 JS/PHP 的
+    #   单引号字符串一律误判(其内容常以字母开头, 如 var s = 'hello'), 导致引号配对
+    #   全线错位 ⇒ 实测「括号失衡」从 43,550 块**涨到** 70,543 块。
+    _is_rust = (lang or "").lower().startswith("rust")
     out = []
     i, n = 0, len(code)
-    in_line = in_block = in_dq = in_sq = False
+    in_line = in_block = False
+    q = ""                 # 字符串定界符: " ' \"\"\" ''' (空 = 不在字符串中)
+    buf = []               # 字符串内容缓冲(未闭合要回吐)
     while i < n:
         c = code[i]
         nxt = code[i + 1] if i + 1 < n else ""
+        n2 = code[i + 2] if i + 2 < n else ""
         if in_line:
             if c == "\n":
                 in_line = False
@@ -906,41 +964,73 @@ def _strip_for_brackets(code):
                 continue
             i += 1
             continue
-        if in_dq:
+        if q:                                   # ---- 字符串中 ----
             if c == "\\":
+                buf.append(c)
+                buf.append(nxt)
                 i += 2
                 continue
-            if c == '"':
-                in_dq = False
-            i += 1
-            continue
-        if in_sq:
-            if c == "\\":
-                i += 2
+            if len(q) == 3:
+                if code.startswith(q, i):
+                    q, buf = "", []
+                    i += 3
+                    continue
+                buf.append(c)
+                i += 1
                 continue
-            if c == "'":
-                in_sq = False
+            if c == q:
+                q, buf = "", []
+                i += 1
+                continue
+            if c == "\n":
+                # ③ 未闭合字符串 ⇒ 不是字符串, 把缓冲内容原样回吐(见 docstring)
+                out.extend(buf)
+                buf = []
+                q = ""
+                out.append(c)
+                i += 1
+                continue
+            buf.append(c)
             i += 1
             continue
-        # 正常态: 识别注释/字符串起点, 其余字符保留
+        # ---- 正常态 ----
+        # 行注释: URL 里的 // 不算(回看连续 / 串; 前一个字符是 : ⇒ URL scheme)
         if c == "/" and nxt == "/":
-            in_line = True
-            i += 2
+            j = i - 1
+            while j >= 0 and code[j] == "/":
+                j -= 1
+            if not (j >= 0 and code[j] == ":"):
+                in_line = True
+                i += 2
+                continue
+            out.append(c)
+            i += 1
             continue
         if c == "/" and nxt == "*":
             in_block = True
             i += 2
             continue
+        if c in ('"', "'") and nxt == c and n2 == c:      # ② 三引号
+            q, buf = c * 3, []
+            i += 3
+            continue
         if c == '"':
-            in_dq = True
+            q, buf = '"', []
             i += 1
             continue
         if c == "'":
-            in_sq = True
+            # ① Rust 生命周期 'a / 'static ⇒ 非字符字面量(**仅 rust 块**, 见上方 gating)
+            if _is_rust and (nxt.isalpha() or nxt == "_") and n2 != "'":
+                out.append(c)
+                i += 1
+                continue
+            q, buf = "'", []
             i += 1
             continue
         out.append(c)
         i += 1
+    if q:                                       # 文件末尾仍未闭合 ⇒ 回吐缓冲
+        out.extend(buf)
     return "".join(out)
 
 
@@ -967,27 +1057,35 @@ def check_code_syntax(code_fields):
                 st["nolang"] += 1
             if 0 < nlines < 3 and lang_l != "text":   # text=样例 IO 数据块, 非代码(AtCoder 固有形态)
                 st["tiny"] += 1
-            if lang_l in ("python", "py", "python3"):
-                if RE_REPL_HINT.search(body):
-                    continue  # REPL/终端会话片段, 跳过 ast 校验
-                st["python_checked"] += 1
-                try:
-                    ast.parse(body)
-                except SyntaxError as e:
-                    st["python_fail"] += 1
-                    issues.append(("代码语法校验失败",
-                                   f"python 块 行{e.lineno}: {e.msg}"))
-            elif lang_l in ("js", "javascript", "ts", "typescript", "java", "c",
+            # ⚠️ 2026-09-20 口径变更(用户拍板): **移除 Python ast.parse 语法校验**。
+            #   理由: 论坛问答(GitHub Issues)的代码块天然是**片段型** —— 作者常省略
+            #   上下文缩进、用 `(...)`/`...` 占位、写 Py2 语法(`print x`)、或有意
+            #   留残缺示例; 这些是真实语料形态, 不是数据缺陷。
+            #   实测被该检查判 ERROR 的 24,324 条(2.8%), 逐条取样证实全部是源数据
+            #   真实片段(如 `def f(...):` / `type(s) = machine.SPI` / `exit=False*)`)。
+            #   ⇒ 该硬指标不适用于论坛型语料, 已移除(报告对应行改显 ➖ 不执行)。
+            if lang_l in ("js", "javascript", "ts", "typescript", "java", "c",
                             "cpp", "c++", "go", "rust", "cs", "csharp", "php",
                             "rb", "ruby", "swift", "kt", "kotlin", "scala"):
                 # 括号平衡粗检(字符串内括号会造成少量误报, 仅 WARN 级)
-                # 豁免: 含 "..." 省略号的块 —— 用户缩略示例代码普遍省略闭合括号
+                # 豁免 1: 省略号 —— 用户缩略示例代码普遍省略闭合括号
                 # (如 appbar.addOnOffsetChangedListener { ... } 截图截断), 非真残缺。
-                if "..." in body or "…" in body or "省略" in body:
+                # ⚠️ 2026-09-20 扩宽: 原仅认 "..." / "…"; 实测作者也写**两点** ".."
+                #   (如 /* ..rest of code.. */) ⇒ 一并豁免。
+                #   判据 `(?<![\w.])\.\.(?![./])`: 要求 ".." 前不是单词字符/点, 后不是 "." 或 "/"
+                #   ⇒ 命中 ` ..rest`(后随字母) 与 ` */`, 但排除 `...` 内部、`../路径`、`a..b`、`1..5`。
+                if ("..." in body or "…" in body or "省略" in body
+                        or re.search(r"(?<![\w.])\.\.(?![./])", body)):
+                    continue
+                # 豁免 2(2026-09-20 新增): **patch/diff 文本不是可编译代码** ——
+                #   diff 只含增删行, 括号天然不成对。实测误报样本:
+                #   "diff --git a/... +++ b/... @@ -6,7 +6,7 @@" ⇒ 跳过粗检。
+                if body.lstrip().startswith("diff --git") or \
+                        re.search(r"^@@ .* @@", body, re.M):
                     continue
                 # 括号平衡只统计"代码骨架"(剥离 // 与 /* */ 注释、字符串/字符字面量),
                 # 否则注释/字符串内的括号被计入 → 误报(实测 LeetCode 题解多例)。
-                skel = _strip_for_brackets(body)
+                skel = _strip_for_brackets(body, lang_l)
                 paren_o, paren_c = skel.count("("), skel.count(")")
                 brack_o, brack_c = skel.count("["), skel.count("]")
                 brace_o, brace_c = skel.count("{"), skel.count("}")
@@ -1168,7 +1266,7 @@ def fence_langs(text):
     return out
 
 
-def deep_check_record(rec, dataset_class="code"):
+def deep_check_record(rec, dataset_class="forum"):
     """深度语义层 N1-N9, 返回 (issues {rule: detail}, ctx {q,a,meta,fences})。
     dataset_class: "code"=答案应含代码的编程题集(LeetCode/AtCoder/CodeChef);
                    "forum"=论坛问答(StackExchange 等), 纯文字答案合法 → 抑制 N1/N3/N6。"""
@@ -1187,6 +1285,7 @@ def deep_check_record(rec, dataset_class="code"):
     qfences = fence_langs(q)
     fences = afences + qfences
     issues = {}
+    _sc = lambda t, s, e, w=40: "«" + _hit_ctx(t, s, e, w) + "»"  # 命中原文(明细可复核)
 
     # N1 无代码块(仅 code 类适用; forum 纯文字答案合法 → 豁免)
     raw_lang = None
@@ -1200,12 +1299,16 @@ def deep_check_record(rec, dataset_class="code"):
             elif m.get("has_code") is True:
                 raw_lang = "__hascode__"
         if raw_lang is None and len(a_sc.strip()) > 40:
-            issues["N1_无代码块"] = "q/a 均无代码块(含裸代码判定)"
+            # 附答案开头原文(证明确为纯文字, 无裸代码漏判)
+            issues["N1_无代码块"] = (
+                "q/a 均无代码块(含裸代码判定); 答案开头: "
+                f"{_sc(a_sc, 0, min(60, len(a_sc)), 0)}")
 
-    # N2 模板占位
+    # N2 模板占位(附模板串命中原文)
     for name, pat in TEMPLATE_PATTERNS[:2]:
-        if pat in a:
-            issues["N2_模板占位"] = pat
+        i = a.find(pat)
+        if i >= 0:
+            issues["N2_模板占位"] = f"答案含模板占位 [{name}] {_sc(a, i, i + len(pat))}"
             break
     if "N2_模板占位" not in issues and PLACEHOLDER_ANSWER_PAT.match(a.strip()):
         issues["N2_模板占位"] = "标题式空答案"
@@ -1231,12 +1334,19 @@ def deep_check_record(rec, dataset_class="code"):
             f" | 标 {pl}(数据格式/标记语言, 非编程语言)"
 
     # N5 截断嫌疑(仅 code 类; forum 把 ``` 当行内代码, 围栏天然不成对 → 抑制)
+    # 附最后一个未闭合围栏处的原文(看内容戛然而止还是围栏误用)
     if not forum and len(FENCE_OPEN.findall(a_sc)) % 2 == 1:
-        issues["N5_截断嫌疑"] = "代码围栏未闭合"
+        _opens = [x.start() for x in FENCE_OPEN.finditer(a_sc)]
+        _lp = _opens[-1]
+        issues["N5_截断嫌疑"] = f"代码围栏未闭合; 末围栏处: {_sc(a_sc, _lp, _lp + 3)}"
 
     # N6 上标压平(仅 code 类: 竞赛题约束数值; forum 普通数字误报 → 抑制)
-    if not forum and SUPP_PAT.search(q):
-        issues["N6_上标压平可疑"] = SUPP_PAT.search(q).group(0)
+    # 附命中串 + 题面原文(看约束区间压平形态, 如 2≤n≤2^31-1 → 2≤n≤231 - 1)
+    if not forum:
+        _sup = SUPP_PAT.search(q)
+        if _sup:
+            issues["N6_上标压平可疑"] = (
+                f"题面含疑似压平上标 [{_sup.group(0)}]; {_sc(q, _sup.start(), _sup.end())}")
 
     # N9 AI 答案(2026-09-20 收紧: **只扫 author/metadata 署名类字段**, 正文命中不判 —
     # 论坛语料正文大量"讨论 ChatGPT/GPT generated"属被讨论对象而非答案作者标注,
@@ -1261,14 +1371,15 @@ def deep_check_record(rec, dataset_class="code"):
 class QaQC:
     def __init__(self, near_dup=True, shingle_cap=NEAR_DUP_SHINGLE_CAP,
                  max_detail=200000, exempt_multi_turn=True,
-                 dataset_class="code", token_sample=0.0, fail_on_warn=False):
+                 dataset_class="forum", token_sample=0.0, fail_on_warn=False):
         self.near_dup = near_dup            # 是否启用近似查重(§4.2 LQ7)
         # 多轮占比 ≥10% 红线默认豁免(2026-09-19): 代码问答数据集构造上多为单轮
         # (SO 采纳答案/编程题集), 多轮 0% 单列 WARN 不触发退回; 需多轮口径的
         # 工单/追答类数据用 exempt_multi_turn=False 显式关闭豁免。
         self.exempt_multi_turn = exempt_multi_turn
         # 深度语义层(N1-N9) —— 合并自 code_qa_deep_qc.py
-        self.dataset_class = dataset_class  # code=编程题集 / forum=论坛问答
+        # 2026-09-20: 恒为 forum(已移除 --dataset-class 参数)
+        self.dataset_class = dataset_class
         self.token_sample = token_sample    # N4 token 复算抽样比例(0=关)
         self.fail_on_warn = fail_on_warn    # 深度层 WARN 是否转 ERROR 接 CI
         self._deep_rng = random.Random(20260918)
@@ -1290,6 +1401,10 @@ class QaQC:
         self._err_count = 0                 # 全量计数(恒准确, 供报告/退出码)
         self._warn_count = 0
         self._item_cnt = {}                 # 检查项 → 全量条数(整改明细用, 恒准确)
+        # 2026-09-20: 检查项 → 级别(ERROR 优先)。用于「问题整改明细」区分
+        # ERROR(待整改) / WARN(建议复核, 不阻断交付) —— 原先把两者都写成"待整改",
+        # 使 WARN 项(如"多轮配对不足", 属数据真实形态)读起来像欠账。
+        self._item_level = {}
         self.stats = {"total": 0, "multi_turn": 0, "lang": {}, "domain": {},
                       "dup_q": 0, "same_q_diff_lang": 0, "hidden_span": 0, "tokens_sum": 0,
                       "multi_turn_lt3": 0, "files_mixed_turn": [],
@@ -1310,6 +1425,7 @@ class QaQC:
                              "LQ5_违规内容": 0, "LQ6_占位符乱码模板": 0,
                              "LQ7_问答高度近似": 0}}
         self.ip_detail = []         # [(rid, ip, 上下文)] 内网 IP 全量命中(报告附录展示原文)
+        self.social_detail = []     # [(rid, 值, 上下文)] 社交账号全量命中(报告附录展示原文; 已脱敏的不计入)
         self._seen_q = {}
         self._seen_firstq = {}
         self._file_turn_kinds = {}  # 文件 → {single, multi} 出现标记(§3 分片归档检查)
@@ -1322,6 +1438,8 @@ class QaQC:
         else:
             self._warn_count += 1
         self._item_cnt[item] = self._item_cnt.get(item, 0) + 1
+        if level == "ERROR" or item not in self._item_level:
+            self._item_level[item] = level     # ERROR 优先(同一检查项混级时以 ERROR 为准)
         lst = self.error_rows if level == "ERROR" else self.warn_rows
         if len(lst) < self.max_detail:
             lst.append((rid, item, detail))
@@ -1560,8 +1678,20 @@ class QaQC:
                      f"正文含私网地址 {ips_real[0]} 等 {len(ips_real)} 处(§6 须 x 占位, 代码示例除外)")
 
         # E9c 社交账号(§6: 微信/微博/抖音等)
-        if RE_SOCIAL_ACCT.search(answer_text):
-            self.add("WARN", rid, "疑似社交账号", "含微信号/QQ 号特征串(§6 须 x 占位)")
+        # 2026-09-20 口径: 明细须带命中原文+上下文(同隐私/内网 IP);
+        # 已按 §6 脱敏(值含 x 占位, 不可还原)的特征串不再产生明细。
+        _soc_hits = []
+        for _m in RE_SOCIAL_ACCT.finditer(answer_text):
+            _v = _m.group(0)
+            if _social_masked(_v):
+                continue
+            _soc_hits.append((_v, _hit_ctx(answer_text, _m.start(), _m.end())))
+            self.social_detail.append((rid, _v, _hit_ctx(answer_text, _m.start(), _m.end())))
+        if _soc_hits:
+            self.add("WARN", rid, "疑似社交账号",
+                     "含微信号/QQ 号特征串(§6 须 x 占位); 命中: " + " | ".join(
+                         f"{v} → 脱敏 `{_social_desensitize(v)}` «{ctx}»"
+                         for v, ctx in _soc_hits[:3]))
 
         # E11 非文本资源(§4.1: 真实非文本资源破坏自包含须剔除, 仅留纯文本+代码)
         # 检测对象=代码块外正文(逐字段分开处理, 与整改脚本 split_fenced_segments 同口径:
@@ -1746,7 +1876,7 @@ class QaQC:
                 continue  # 全局规则, 由 check_global 判定
             self.deep_rule_hits[k] += 1
             if len(self.deep_rule_samples[k]) < 6:
-                self.deep_rule_samples[k].append(f"{rid}: {str(detail)[:60]}")
+                self.deep_rule_samples[k].append(f"{rid}: {str(detail)[:120]}")
             self.add("ERROR" if self.fail_on_warn else "WARN", rid, k,
                      f"{detail}(深度语义层)")
         # N4 token 复算抽检(按声明 tokenizer=o200k_base 抽样复算 q/a token)
@@ -1873,9 +2003,9 @@ class QaQC:
             "source 含低阶模型标识(§4.1 须 Claude-4.7-opus 同级以上)")
         # 代码功能校验汇总(§10 三)
         c = st["code"]
-        row("ERROR" if c["python_fail"] else "PASS",
-            f"Python 语法校验失败 {c['python_fail']} 块",
-            f"python 块共校验 {c['python_checked']} 块(ast.parse)")
+        # ⚠️ 2026-09-20 口径变更(用户拍板): Python ast.parse 语法校验已移除
+        row("SKIP", "Python 语法校验 不执行",
+            "口径已移除: 论坛问答代码块为片段型(占位/缩进省略/Py2 语法), ast.parse 不适用")
         row("WARN" if c["bracket_bad"] else "PASS",
             f"代码块括号失衡 {c['bracket_bad']} 块", "非 Python 语言粗检(字符串内括号可能误报, 需复核)")
         row("PASS", "总token(标注/估算)", f"{st['tokens_sum']:,}")
@@ -1911,9 +2041,14 @@ class QaQC:
                            key=lambda x: (-self._item_cnt.get(x, 0), x)):
             rids = sample_rids.get(item, [])
             advice = RECTIFY_ADVICE.get(item, "按规范书相应条款复核处理")
+            # 2026-09-20: 状态按级别区分 —— ERROR=待整改; WARN=建议复核(不阻断交付)。
+            # 例: "多轮配对不足" 属**数据真实形态**(论坛问答天然多为 2 组), 是 WARN,
+            #     不应渲染成"待整改"的欠账。
+            status = ("待整改" if self._item_level.get(item) == "ERROR"
+                      else "WARN·建议复核(不阻断交付)")
             rows.append((item, self._item_cnt.get(item, 0),
                          ", ".join(rids[:5]) + ("…" if len(rids) > 5 else ""),
-                         advice, "待整改"))
+                         advice, status))
         resolved, unresolved, added = [], [], []
         if prev_problems is not None:
             cur_keys = set(cur.keys())
@@ -2013,8 +2148,8 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
     L.append("| 检查项 | 结果 | 说明 |")
     L.append("|:---|:---:|:---|")
     L.append(f"| 代码块总数 | ✅ | {c['blocks']} 个(answer 内 fenced 块) |")
-    L.append(f"| Python 块语法校验(ast.parse) | {'❌' if c['python_fail'] else '✅'} | "
-             f"校验 {c['python_checked']} 块, 失败 {c['python_fail']} 块(§9 代码须语法完整可复现) |")
+    L.append("| Python 块语法校验 | ➖ | 口径已移除(论坛型语料代码为片段, ast.parse 不适用; "
+             "2026-09-20 用户拍板) |")
     L.append(f"| 非 Python 块括号平衡粗检 | {'⚠️' if c['bracket_bad'] else '✅'} | "
              f"失衡 {c['bracket_bad']} 块(字符串内括号可能误报, 需复核) |")
     L.append(f"| 存在代码问题的记录 | {'⚠️' if st['code_fail_recs'] else '✅'} | "
@@ -2160,17 +2295,26 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
                  f"(已整改/{len(resolved) + len(unresolved)} 历史问题)")
         L.append("")
 
-    # ---- 九/十、明细(可折叠: 默认显示前 10 条, <details> 展开看全部) ----
+    # ---- 九/十、明细(可折叠: 默认显示前 10 条, <details> 展开看全部; 2026-09-20 起全量列出, 不再截断) ----
     _PREVIEW = 10
-    _FULL_CAP = 5000  # 展开后最多渲染行数, 防超长报告
     # 内网 IP 汇总行(只列首个 IP+"等 N 处")与逐 IP 原文行冗余 → 去汇总行,
     # 只保留逐 IP 原文行(每个命中的 IP 独立一条, 均带 ±40 上下文), 避免"部分 IP 无原文"。
-    _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
+    _warn_rows = [r for r in qc.warn_rows if r[1] not in ("疑似内网IP", "疑似社交账号")]
     for rid, ip, ctx in qc.ip_detail:
         # 附 §6 去隐私化脱敏示例(保留网段, 主机位 x 化), 直接给出整改口径
         _warn_rows.append((rid, "疑似内网IP",
                            f"{ip} → 脱敏 `{_ip_desensitize(ip)}` «{ctx}»"))
-    _warn_rows.sort(key=lambda r: (r[1], r[0]))
+    # 2026-09-20 口径: 社交账号同样改逐命中原文行(已脱敏串不进 social_detail,
+    # 即"已脱敏不显示明细"); 汇总行(无原文)一并去除。
+    for rid, val, ctx in qc.social_detail:
+        _warn_rows.append((rid, "疑似社交账号",
+                           f"{val} → 脱敏 `{_social_desensitize(val)}` «{ctx}»"))
+    # 2026-09-20 展示优先级: 隐私类最需人工复核 ⇒ 排前;
+    # 「代码块括号失衡」是粗检指标(抽样实测约 1/3 为脚本误报, 其余多为论坛
+    # 片段型语料的天然形态) ⇒ 排最后, 避免淹没真正要看的隐私/多轮项。
+    _WARN_PRI = {"疑似社交账号": 0, "隐私泄露": 0, "疑似内网IP": 1,
+                 "多轮配对不足": 2, "代码块括号失衡": 9}
+    _warn_rows.sort(key=lambda r: (_WARN_PRI.get(r[1], 5), r[1], r[0]))
 
     def dump_section(title, rows):
         L.append(f"## {title}")
@@ -2193,16 +2337,14 @@ def write_reports(out_dir, qc, file_paths, started_at, sample_pct=0, sampled_n=0
             L.append("")
             L.append(f"<details><summary>展开剩余 {len(rows) - _PREVIEW} 条</summary>")
             L.append("")
-            for rid, item, detail in rows[_PREVIEW:_FULL_CAP]:
+            for rid, item, detail in rows[_PREVIEW:]:
                 L.append(f"| {rid} | {item} | {esc(detail)} |")
-            if len(rows) > _FULL_CAP:
-                L.append(f"| … | | 其余 {len(rows) - _FULL_CAP} 条略(见 HTML 报告) |")
             L.append("")
             L.append(f"</details>")
         L.append("")
 
     dump_section("九、ERROR 明细(必须整改)", qc.error_rows)
-    dump_section("十、WARN 明细(建议复核; 隐私/内网 IP 命中含原文上下文)", _warn_rows)
+    dump_section("十、WARN 明细(建议复核; 隐私/内网 IP/社交账号命中含原文上下文)", _warn_rows)
 
     # ---- 附录: 分布 ----
     for title, key in (("附录A、编程语言分布(§5.1 单一语言 ≤30%)", "lang"),
@@ -2260,8 +2402,8 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
     c = st["code"]
     dim_html("三、抽样代码功能校验(§10; §9 代码质量硬指标)", [
         ("代码块总数", "✅", f"{c['blocks']} 个(answer 内 fenced 块)"),
-        ("Python 块语法校验(ast.parse)", "❌" if c["python_fail"] else "✅",
-         f"校验 {c['python_checked']} 块, 失败 {c['python_fail']} 块(§9 代码须语法完整可复现)"),
+        ("Python 块语法校验", "➖",
+         "口径已移除(论坛型语料代码为片段, ast.parse 不适用; 2026-09-20 用户拍板)"),
         ("非 Python 块括号平衡粗检", "⚠️" if c["bracket_bad"] else "✅",
          f"失衡 {c['bracket_bad']} 块(字符串内括号可能误报, 需复核)"),
         ("存在代码问题的记录", "⚠️" if st["code_fail_recs"] else "✅",
@@ -2331,18 +2473,25 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
              "<th>样本ID</th><th>建议整改措施</th><th>状态</th></tr>")
     if rect_rows:
         for item, cnt, rids, advice, status in rect_rows:
-            H.append(tr([item, cnt, rids, advice, status], "error"))
+            H.append(tr([item, cnt, rids, advice, status],
+                        "warn" if status.startswith("WARN") else "error"))
     else:
         H.append(tr(["无待整改问题", "", "", "", ""], ""))
     H.append("</table>")
-    # 九/十、明细(与 MD 一致: 默认显示前 10 条, <details> 展开看全部, 上限 5000)
+    # 九/十、明细(默认显示前 10 条, <details> 展开; HTML 适当省略防浏览器卡顿,
+    # MD 报告为全量权威清单)
     _PREVIEW = 10
-    _FULL_CAP = 5000
+    _HTML_CAP = 2000  # HTML 展开后最多渲染行数; 超出提示去 MD 查全量
     _warn_rows = [r for r in qc.warn_rows if r[1] != "疑似内网IP"]
     for rid, ip, ctx in qc.ip_detail:
         _warn_rows.append((rid, "疑似内网IP",
                            f"{ip} → 脱敏 `{_ip_desensitize(ip)}` «{ctx}»"))
-    _warn_rows.sort(key=lambda r: (r[1], r[0]))
+    # 2026-09-20 展示优先级: 隐私类最需人工复核 ⇒ 排前;
+    # 「代码块括号失衡」是粗检指标(抽样实测约 1/3 为脚本误报, 其余多为论坛
+    # 片段型语料的天然形态) ⇒ 排最后, 避免淹没真正要看的隐私/多轮项。
+    _WARN_PRI = {"疑似社交账号": 0, "隐私泄露": 0, "疑似内网IP": 1,
+                 "多轮配对不足": 2, "代码块括号失衡": 9}
+    _warn_rows.sort(key=lambda r: (_WARN_PRI.get(r[1], 5), r[1], r[0]))
 
     def detail_html(title, rows, cls):
         H.append(f"<h2>{esc(title)}</h2>")
@@ -2350,7 +2499,8 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
             H.append("<p>无</p>")
             return
         if len(rows) > _PREVIEW:
-            H.append(f"<p>共 {len(rows)} 条 — 默认显示前 {_PREVIEW} 条, 点击展开看全部。</p>")
+            H.append(f"<p>共 {len(rows)} 条 — 默认显示前 {_PREVIEW} 条, 点击展开查看"
+                     f"(HTML 最多列 {min(len(rows), _HTML_CAP)} 条, 完整清单见同目录 MD 报告)。</p>")
         else:
             H.append(f"<p>共 {len(rows)} 条(全部列出)。</p>")
         H.append("<table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
@@ -2360,13 +2510,14 @@ th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8
         if len(rows) > _PREVIEW:
             H.append(f"<details><summary>展开剩余 {len(rows) - _PREVIEW} 条</summary>"
                      f"<table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>")
-            for r in rows[_PREVIEW:_FULL_CAP]:
+            for r in rows[_PREVIEW:_HTML_CAP]:
                 H.append(tr(r, cls))
-            if len(rows) > _FULL_CAP:
-                H.append(tr(["…", "", f"其余 {len(rows) - _FULL_CAP} 条略(见 MD 报告)"], cls))
+            if len(rows) > _HTML_CAP:
+                H.append(tr(["…", "", f"HTML 省略 {len(rows) - _HTML_CAP} 条 — "
+                                      f"完整清单见同目录 MD 报告"], cls))
             H.append("</table></details>")
     detail_html("九、ERROR 明细(必须整改)", qc.error_rows, "error")
-    detail_html("十、WARN 明细(建议复核; 隐私/内网 IP 命中含原文上下文)", _warn_rows, "warn")
+    detail_html("十、WARN 明细(建议复核; 隐私/内网 IP/社交账号命中含原文上下文)", _warn_rows, "warn")
     H.append("</body></html>")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write("\n".join(H))
@@ -2396,9 +2547,11 @@ def main():
                          "(SO/编程题集等无多轮场景)多轮 0%% 单列为 WARN 不触发整体退回"
                          "(需换源补采, 见 README 口径说明); --no-exempt-multi-turn "
                          "显式关闭豁免, 多轮 0%% 判 ERROR(适用要求多轮的工单/追答类数据)")
-    ap.add_argument("--dataset-class", default="forum", choices=["code", "forum"],
-                    help="深度语义层 N1-N9 的数据集类型: code=编程题集(答案应含代码, 默认); "
-                         "forum=论坛问答(纯文字答案合法, 抑制 N1/N3/N6)")
+    # ⚠️ 2026-09-20 口径变更(用户拍板): **移除 `--dataset-class` 参数**。
+    #   所有质检统一按 **forum(论坛问答)** 处理 —— 即恒抑制深度层 N1/N3/N6
+    #   (纯文字答案合法 / primary_language 为话题标签而非答案代码语言 / 不做上标压平判定)。
+    #   原因: 本项目的代码问答语料均源自社区论坛(Issue/SO/Discourse…), 而非编程题集,
+    #   按 code 型判定会系统性误报。
     ap.add_argument("--token-sample", type=float, default=0.0, metavar="P",
                     help="深度层 N4 token 复算抽检比例(如 0.01=1%%), 0=关闭(默认; 贵)")
     ap.add_argument("--fail-on-warn", action="store_true",
@@ -2436,7 +2589,8 @@ def main():
             total_checked += tn
     near_dup_ok = (not args.no_near_dup) and total_checked <= NEAR_DUP_SHINGLE_CAP
     qc = QaQC(near_dup=near_dup_ok, exempt_multi_turn=args.exempt_multi_turn,
-              dataset_class=args.dataset_class, token_sample=args.token_sample,
+              dataset_class="forum",   # 2026-09-20: 移除 --dataset-class, 恒按 forum 处理
+              token_sample=args.token_sample,
               fail_on_warn=args.fail_on_warn)
     if not near_dup_ok and not args.no_near_dup:
         log.warning("检查记录数 %d > 近似查重上限 %d, 自动跳过近似重复检测(流式 O(1) 内存, "
