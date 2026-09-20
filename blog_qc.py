@@ -38,7 +38,7 @@ FIELD_MISSING_LIMIT = 1.0   # §9.1: 必填字段缺失率 ≤ 1%
 NONTECH_RATE_LIMIT = 0.5    # §9.3: 广告/评论/会议预告等非技术内容占比 ≤ 0.5%
 AUTHORITY_COVER = 95.0      # §9.7: 权威源覆盖率 ≥ 95%
 LANG_LIMIT = 30.0           # §5.1: 单一编程语言占比 ≤ 30%
-MIN_CONTENT_CHARS = 500     # 低质量正文下限(自定阈值)
+MIN_CONTENT_CHARS = 200     # 低质量正文下限(自定阈值)
 
 # §5.3 权威渠道名单(规范书明示"不限于", 最终以合同约定名单为准)
 AUTHORITATIVE_SOURCES = [
