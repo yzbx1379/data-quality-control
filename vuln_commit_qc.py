@@ -80,6 +80,9 @@ RE_GHPAT = re.compile(r'ghp_[A-Za-z0-9]{36}')
 RE_PRIV_IP = re.compile(
     r'(?<![\d.])(?:192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![\d.])')
 RE_XX_MASK = re.compile(r'(?i)[xX]{10,}')
+# UUID 模板(xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx 等)是生成代码, 非脱敏
+# 用字符类覆盖全小写/全大写/混合形态, 并匹配引号包裹的完整模板字符串
+RE_UUID_TEMPLATE = re.compile(r"['\"]?[xX]{8}-[xX]{4}-[4xX]{4}-[89abxyX-]{4}-[xX]{12}['\"]?", re.I)
 
 # §4.1.5 CVE 编号格式; §6.1 REJECTED/DISPUTED/RESERVED CVE 须剔除
 # 注意: 仅匹配明确的 CVE 状态标注(cve_id 值/text 的 Status 标签),
@@ -136,6 +139,23 @@ def read_jsonl(path):
 # ----------------------------------------------------------------------------
 # unified diff 解析与应用(自洽校验核心)
 # ----------------------------------------------------------------------------
+def _is_patch_header(diff_text):
+    """判断 unified_diff 开头是否为 git format-patch 邮件头。
+
+    邮件头只在文首连续数行(From <sha> / Subject: / Date: / From: 组合),
+    正文中的 From/Subject 文本不属于邮件头, 看到首个 diff --git 即结束判定。
+    """
+    if not diff_text:
+        return False
+    head = diff_text.split("\n")[:8]  # 只看前 8 行
+    for line in head:
+        if RE_DIFF_GIT.match(line):
+            return False  # 已进入纯 diff, 前面没有邮件头
+        if RE_FROM_SHA.match(line) or RE_SUBJECT.match(line):
+            return True
+    return False
+
+
 def parse_file_sections(diff_text):
     """把 diff 拆成 [(文件路径, 段内容行列表, 是否新增文件)]。
 
@@ -408,15 +428,28 @@ class VulnQC:
             self.add("ERROR", rid, "code_note缺失", "complete_code_fetched=false 须附 code_note 说明原因")
 
         # E4 (0828-a) 代码字段混入 format-patch 头/diff 标记 —— 大小写不敏感
+        # 语境豁免: SIP/RTSP 协议报文头 "From:"、SQL/DSL 关键字 token(如 "FROM"i)
+        # 均为代码内容而非 git 邮件头
+        def _strip_protocol_headers(text):
+            kept = []
+            for _l in (text or "").split("\n"):
+                if RE_SUBJECT.search(_l) and (
+                        re.search(r"<sip:|SIP/|;tag=|;branch=|(?:[;\\]|\s)tag=", _l, re.I)
+                        or re.search(r'"[A-Za-z0-9_]+"', _l)):
+                    continue
+                kept.append(_l)
+            return "\n".join(kept)
+
         for fld, val in (("vulnerable_code", vuln), ("fixed_code", fixed)):
             hits = []
-            if RE_FROM_SHA.search(val):
+            _v = _strip_protocol_headers(val)
+            if RE_FROM_SHA.search(_v):
                 hits.append("From <sha> 头")
-            if RE_DIFF_GIT.search(val):
+            if RE_DIFF_GIT.search(_v):
                 hits.append("diff --git")
-            if RE_HUNK_MARK.search(val):
+            if RE_HUNK_MARK.search(_v):
                 hits.append("Hunk/+++ 标记")
-            if RE_SUBJECT.search(val):
+            if RE_SUBJECT.search(_v):
                 hits.append("邮件头(Subject/Date/From:)")
             if hits:
                 self.add("ERROR", rid, "代码字段拼接污染",
@@ -487,16 +520,18 @@ class VulnQC:
                 self.add("ERROR", rid, "内部IP未脱敏",
                          f"{fld} 含私网地址 {ips[0]}(§6.1 应脱敏或剔除)")
                 break
-        # §9.6 严禁纯 x 无差别覆盖(破坏 AST 解析)
+        # §9.6 严禁纯 x 无差别覆盖(破坏 AST 解析); UUID 模板排除
         for fld, val in (("vulnerable_code", vuln), ("fixed_code", fixed)):
-            m = RE_XX_MASK.search(val)
+            stripped = RE_UUID_TEMPLATE.sub('', val or '')  # 剥离 UUID 模板再查
+            m = RE_XX_MASK.search(stripped)
             if m:
                 self.add("WARN", rid, "疑似纯x脱敏",
                          f"{fld} 含连续 {len(m.group(0))} 个 x(§9.6 应使用 dummy_key_123 类语法安全占位符)")
                 break
 
         # W1 unified_diff 含 format-patch 邮件头(非纯 diff 格式)
-        if RE_FROM_SHA.search(diff) or RE_SUBJECT.search(diff):
+        # 注意: 邮件头只可能出现在文首, 用头部片段判定, 避免正文 From/string 误报
+        if _is_patch_header(diff):
             self.add("WARN", rid, "diff含邮件头",
                      "unified_diff 以 git format-patch 邮件头开头(From <sha>/Subject), 建议剥离为纯 diff")
 
