@@ -1,0 +1,120 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>漏洞修复commit质检报告</title><style>
+body{font-family:'Microsoft YaHei',sans-serif;margin:24px;color:#222;max-width:1200px}
+h1{border-bottom:2px solid #2e75b6;padding-bottom:8px}h2{color:#2e75b6;margin-top:28px}
+table{border-collapse:collapse;width:100%;margin:8px 0}
+th,td{border:1px solid #ccc;padding:6px 10px;font-size:13px;text-align:left}
+th{background:#eaf2fa}tr.error td{background:#fdecea}tr.warn td{background:#fff8e1}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-weight:bold}
+.badge.fail{background:#c0392b;color:#fff}.badge.pass{background:#27ae60;color:#fff}
+</style></head><body>
+<h1>开源项目漏洞修复commit数据集 质检报告</h1>
+<p>生成时间: 2026-09-08 15:34:50 | 样本: 10 条 (全量检查) | ERROR: 0 | WARN: 8</p>
+<p class="badge pass">代码检测通过, 待人工复检</p>
+<h2>二、数据完整性</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>
+<tr class=""><td>样本总数</td><td>✅</td><td>10 条</td></tr>
+<tr class=""><td>顶层结构 {id,text,meta}</td><td>✅</td><td>结构异常 0 条</td></tr>
+<tr class=""><td>必填字段完整</td><td>✅</td><td>缺失 0/10 条(阈值 ≤1%, 实测 0.00%)</td></tr>
+<tr class=""><td>代码四件套完整(vuln/fixed/diff/commit_message)</td><td>✅</td><td>齐全 10/10 条(§7.1 四大文本字段)</td></tr>
+<tr class=""><td>完整原始代码(ccf=true)</td><td>✅ 10/10 (100.0%)</td><td>complete_code_fetched=true(主代码文件完整)</td></tr>
+<tr class=""><td>CVE 编号格式有效</td><td>✅ 10/10 (100.0%)</td><td>CVE-YYYY-NNNN 格式(§4.1.5)</td></tr>
+<tr class=""><td>diff 自洽(vuln+diff=fixed)</td><td>✅</td><td>一致 10 / 不一致 0(0828 反馈 c; git apply 严格校验)</td></tr>
+<tr class=""><td>diff 无重复</td><td>✅</td><td>标准化 SHA-256 重复 0 条(§6.2)</td></tr>
+</table>
+<h2>三、格式规范</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>
+<tr class=""><td>JSONL 可解析(无结构异常)</td><td>✅</td><td>结构/解析异常 0 条</td></tr>
+<tr class=""><td>text 键值对无中英混排</td><td>✅</td><td>英文项目 text 用中文标签 0 条(§7.1.3 须英文标签)</td></tr>
+<tr class=""><td>代码字段无 diff 拼接/占位污染</td><td>✅</td><td>混入邮件头/From 大写/(New file) 占位 0 条(0828 反馈 a/d)</td></tr>
+<tr class=""><td>diff 含上下文(建议级)</td><td>✅</td><td>平均 167.4 行/条(§4.1.6 建议前后 10-20 行, 非硬性)</td></tr>
+</table>
+<h2>四、数据来源与合规</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>
+<tr class=""><td>CVE 权威库关联(NVD)</td><td>✅ 10/10</td><td>cve_id 格式有效(§4 采集口径须关联权威库)</td></tr>
+<tr class=""><td>GitHub 可溯源</td><td>✅ 10/10</td><td>github_url 指向修复 commit</td></tr>
+<tr class=""><td>License 100% 覆盖(允许 AI 训练)</td><td>✅ 10/10</td><td>§9.8 硬性要求, 缺 0 条</td></tr>
+</table>
+<h3>4.1 项目来源(组织)分布</h3><table><tr><th>项目组织</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>envoyproxy</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>pytorchlightning</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>hazelcast</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>unshiftio</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>ljharb</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>zulip</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>janko</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>JamesNK</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>onnx</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>tokio-rs</td><td>1</td><td>10.0%</td></tr>
+</table>
+<h2>五、安全知识覆盖度</h2><table><tr><th>检查项</th><th>结果</th><th>说明</th></tr>
+<tr class=""><td>CWE 漏洞分类覆盖</td><td>✅ 10 类 (10/10 条有标注)</td><td>cwe_classification 非空(§4 漏洞类型标注)</td></tr>
+<tr class=""><td>CVSS 评分覆盖</td><td>✅ 10/10 (100.0%)</td><td>cvss_score 非空</td></tr>
+<tr class=""><td>漏洞类型标注</td><td>✅ 8 类</td><td>vulnerability_type 分布(见 5.3)</td></tr>
+<tr class=""><td>严重等级分布</td><td>✅ 3 档</td><td>CRITICAL/HIGH/MEDIUM(见 5.4)</td></tr>
+</table>
+<h3>5.1 编程语言分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>C++</td><td>2</td><td>20.0%</td></tr>
+<tr class=""><td>Python</td><td>2</td><td>20.0%</td></tr>
+<tr class=""><td>JavaScript</td><td>2</td><td>20.0%</td></tr>
+<tr class=""><td>Java</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Ruby</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>C#</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Rust</td><td>1</td><td>10.0%</td></tr>
+</table>
+<h3>5.2 严重等级分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>CRITICAL</td><td>5</td><td>50.0%</td></tr>
+<tr class=""><td>HIGH</td><td>4</td><td>40.0%</td></tr>
+<tr class=""><td>MEDIUM</td><td>1</td><td>10.0%</td></tr>
+</table>
+<h3>5.3 漏洞类型分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>Authorization Bypass</td><td>2</td><td>20.0%</td></tr>
+<tr class=""><td>OS Command Injection</td><td>2</td><td>20.0%</td></tr>
+<tr class=""><td>Other</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Code Injection</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>XXE</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Denial of Service</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Out-of-Bounds Read</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>Use-After-Free</td><td>1</td><td>10.0%</td></tr>
+</table>
+<h3>5.4 CWE 分类分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>['CWE-295']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-94']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-611']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-639']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-78']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-284', 'CWE-863', 'NVD-CWE-Other']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-20', 'NVD-CWE-Other']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-755']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-125']</td><td>1</td><td>10.0%</td></tr>
+<tr class=""><td>['CWE-416', 'CWE-672']</td><td>1</td><td>10.0%</td></tr>
+</table>
+<h3>5.5 CVE 年份分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>2022</td><td>7</td><td>70.0%</td></tr>
+<tr class=""><td>2024</td><td>3</td><td>30.0%</td></tr>
+</table>
+<h3>5.6 License 分布</h3><table><tr><th>类别</th><th>记录数</th><th>占比</th></tr>
+<tr class=""><td>Apache-2.0</td><td>5</td><td>50.0%</td></tr>
+<tr class=""><td>MIT</td><td>5</td><td>50.0%</td></tr>
+</table>
+<h2>六、全局质量指标(阈值汇总)</h2><table><tr><th>结果</th><th>指标</th><th>说明</th></tr>
+<tr class=""><td>✅</td><td>单一语言占比 20.0%</td><td>C++ 2/10(阈值 ≤30.0%)</td></tr>
+<tr class=""><td>✅</td><td>近3年CVE占比 30.0%</td><td>3/10(阈值 ≥30.0%)</td></tr>
+<tr class=""><td>✅</td><td>CVE年份跨度</td><td>2022 ~ 2024</td></tr>
+<tr class=""><td>✅</td><td>diff自洽率 100.0%</td><td>一致 10 / 不一致 0(0828反馈c; ccF=false 跳过 0 条)</td></tr>
+<tr class=""><td>✅</td><td>License覆盖率 100.0%</td><td>缺 license 0/10 条(§9.8 要求 100%)</td></tr>
+<tr class=""><td>✅</td><td>Revert/无效修复占比 0.0%</td><td>0/10 条(阈值 ≤0.5%)</td></tr>
+<tr class=""><td>✅</td><td>不完整性文本占比 0.0%</td><td>0/10 条(自洽失败/代码过短/code_note 缺失, 阈值 ≤0.5%)</td></tr>
+<tr class=""><td>✅</td><td>必填字段缺失率 0.0%</td><td>0/10 条(阈值 ≤1%)</td></tr>
+<tr class=""><td>✅</td><td>平均 diff 行数</td><td>167.4 行/条(§4.2 统计指标)</td></tr>
+<tr class="warn"><td>⚠️</td><td>hunk上下文&lt;10行 8 条</td><td>8/10(§4.1.6 建议修改行前后各 10-20 行, '建议'级非硬性)</td></tr>
+</table>
+<h2>ERROR 明细(必须整改)</h2><table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>
+</table>
+<h2>WARN 明细(建议复核)</h2><table><tr><th>ID</th><th>检查项</th><th>详情</th></tr>
+<tr class="warn"><td>CVE-2022-21654-envoy-e9f936d85dc1</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 6 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-0845-pytorch-lightning-8b7a12c52e52</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 9 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-0265-hazelcast-4d6b666cd029</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 4 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-0686-url-parse-d5c64791ef49</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 6 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-0841-npm-lockfile-bfdb84813260</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 6 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-21706-zulip-88917019f038</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 6 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2022-24720-image_processing-038e4574e8f4</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 3 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+<tr class="warn"><td>CVE-2024-27308-mio-90d4fe00df87</td><td>diff上下文不足</td><td>最小 hunk 上下文仅 6 行(§4.1.6 建议修改行前后各 10-20 行)</td></tr>
+</table></body></html>
