@@ -560,14 +560,39 @@ def _privacy_desensitize(pkind, val):
         if len(d) >= 10:
             return d[:6] + "X" * (len(d) - 10) + d[-4:]
         return "XXXXXXXX"
+    if pkind == "银行卡":
+        d = re.sub(r"\D", "", val)
+        if len(d) >= 8:
+            return d[:4] + "X" * (len(d) - 8) + d[-4:]
+        return "XXXX"
     return "xxxxxx"
 
 
+# 银行卡"支付语境门禁"(见 _card_payment_ctx): 命中值 ±60 字符内须同现支付/卡片关键词。
+# 代码问答语料里真实卡号几乎必与"银行卡/credit/visa/cvv"等词同现; 而 Luhn 巧合命中的
+# 数组元素/分区偏移/GUID/引脚定义周围无任何支付词汇 → 此门根治 Luhn 对随机数字串的误报
+# (2026-09-20 A 批实测 9/9 误报: ATX 电源引脚/字符串数组/2D 数组/时间戳/网格/片长/
+#  磁盘分区偏移/GUID hex, 全部无支付语境)。
+_RE_CARD_CTX_EN = re.compile(
+    r'\b(?:credit|debit|bank(?:ing|card)?|visa|master(?:card)?|amex|'
+    r'american\s*express|diners\s*club|cvv2?|cvc|payment|pay(?:pal)?|'
+    r'stripe|checkout|card(?:s|number)?)\b')
+_CARD_CTX_CN = ("银行卡", "信用卡", "借记卡", "卡号", "支付", "付款", "银行", "充值", "刷卡")
+
+
+def _card_payment_ctx(prose, s, e):
+    """命中值 ±60 字符窗口内须出现支付/卡片关键词, 否则视为代码数字串, 不判卡号。"""
+    win = prose[max(0, s - 60):e + 60].lower()
+    return bool(_RE_CARD_CTX_EN.search(win)) or any(k in win for k in _CARD_CTX_CN)
+
+
 def real_bank_cards(text):
-    """银行卡号(Luhn + 边界), 误报根除:
+    """银行卡号(Luhn + 边界 + 支付语境门禁), 误报根除:
       - 排除小数碎片/标识符内数字串(如 0.6297…/4.6666…)
       - 排除 hex 字面量上下文(0x 后、紧邻 a-f 字母, 如 3fe6666666666666)
-      - 排除全同/循环递增数字串(如 6666666666666 / 3334353637383930, 肉眼即非卡号)
+      - 排除全同/循环递增数字串(如 6666666666666 / 34567890123456, 肉眼即非卡号)
+      - 支付语境门禁: 命中值 ±60 字符内无支付/卡片关键词(credit/visa/银行卡/cvv…)
+        → 代码里的数组元素/分区偏移/GUID/引脚号, 不判
     """
     out = []
     for m in re.finditer(r'(?<![\d.])([3-6](?:\s?\d){12,18})(?![\d.])', text or ''):
@@ -588,8 +613,10 @@ def real_bank_cards(text):
             continue  # 全同数字串(如 6666666666666)非卡号
         if re.fullmatch(r'(\d)\1{2}(\d)\2{2}.*', s):
             continue  # 显式 ABA 重复模式(过宽, 仅示例谨慎)
-        if s.isdigit() and all(int(s[i + 1]) - int(s[i]) == 1 for i in range(len(s) - 1)):
-            continue  # 顺序递增(如 0123456789012345)
+        if s.isdigit() and all((int(s[i + 1]) - int(s[i])) % 10 == 1 for i in range(len(s) - 1)):
+            continue  # 循环递增(含 9→0 回绕, 如 0123456789012345 / 34567890123456)
+        if not _card_payment_ctx(text, m.start(), m.end()):
+            continue  # 无支付语境: 代码数字串(数组/分区偏移/GUID/引脚)非卡号
         if luhn_ok(s):
             out.append(s)
     return out
@@ -1636,6 +1663,15 @@ class QaQC:
                 priv_hits.append(("身份证", m.group(0),
                                   _hit_ctx(_prose_idc, m.start(), m.end())))
                 break
+        # 银行卡: §6 匿名化清单。Luhn 对代码数据随机数字串误报率高, 已加"支付语境门禁"
+        # (real_bank_cards 内部), 命中即视为疑似真实卡号 → 与邮箱/手机/身份证同级:
+        # 计入隐私 WARN 并带命中值+脱敏示例+原文明细(对齐报告"逐条列入 WARN 明细")。
+        for _bc in real_bank_cards(prose_text):
+            i = prose_text.find(_bc)
+            priv.append("银行卡")
+            st["privacy_hits"]["银行卡"] = st["privacy_hits"].get("银行卡", 0) + 1
+            priv_hits.append(("银行卡", _bc, _hit_ctx(prose_text, i, i + len(_bc))))
+            break
         if priv:
             st["privacy"] += 1
             st["lq"]["LQ4_隐私未脱敏"] += 1
@@ -1648,11 +1684,6 @@ class QaQC:
             # 2026-09-19 口径(客户确认): 隐私命中统一 WARN(告警级, 需人工复核),
             # 不再判 ERROR — 自披露/示例/代码值占比高, 0 容忍按告警+人工复核执行。
             self.add("WARN", rid, "隐私泄露", detail)
-        # 银行卡: 代码问答数据中无真实卡号场景(SO 问 Linux/JSON/SQL 数字串), Luhn 命中
-        # 100% 为误报(FileID/hex/ID/计数, 实测 USB 设备路径/JSON id/SQL 计数 6/6 误报)。
-        # 按 §9 QC 实践口径: 仅统计不告警, 不再产生"疑似银行卡"WARN 噪音。
-        if real_bank_cards(prose_text):
-            st["privacy_hits"]["银行卡"] = st["privacy_hits"].get("银行卡", 0) + 1
 
         # E9b 内网 IP 明文(§6 脱敏清单) —— 只在代码块外正文检测, 且排除"示例语境"。
         # 校准: 命中 4 条全为反引号内联代码/文件名模式(`192.168.1.225_01_20xxx_TIMING.jpg`、
