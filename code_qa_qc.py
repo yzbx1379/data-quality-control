@@ -928,6 +928,14 @@ SYNTHETIC_Q_MARKERS = ("作为一个ai", "作为一名ai", "ai语言模型", "�
 FORBIDDEN_KW = ("挖矿木马", "病毒样本下载", "社工库", "银行卡四件套", "赌博网站搭建",
                 "博彩平台", "毒品交易", "枪支买卖", "恐怖主义", "色情网站",
                 "洗钱通道", "钓鱼网站生成", "爆破工具包", "木马生成器")
+# 题面强标记(2026-09-21 杭州批 50 万全量核实 1 条误报): FORBIDDEN_KW 命中词常是
+#   算法题面**叙事包装**(洛谷/USACO 题解用"恐怖主义太嚣张…保证 DAG 无环"这类故事壳)。
+#   含 ≥2 个此类题面结构标记的记录 ⇒ 关键词属题面叙事, §8 粗筛降级为 WARN 留人工复核
+#   (方向安全: 真实违规样本极少同时含 2 个以上输入/输出格式/数据范围等强题面标记)。
+_FORBIDDEN_PROSE_MARKERS = ("输入格式", "输出格式", "输入描述", "输出描述",
+                            "数据范围", "数据规模", "数据约束", "约束条件",
+                            "时间限制", "内存限制", "空间限制", "样例输入",
+                            "样例输出", "子任务", "子问题", "评分标准")
 
 # 代码块
 RE_CODE_BLOCK = re.compile(r'```(\w*)\n', re.M)
@@ -949,7 +957,7 @@ RECTIFY_ADVICE = {
     "metadata缺失": "补齐 primary_language/token_count/type",
     "type值错误": "type 字段改为固定值 general_code_qa_dict",
     "id格式": "id 统一为 QA_2026_xxx 前缀哈希编码",
-    "隐藏反爬文本": "清洗剔除 LeetCode 隐形水印 span(§4.1 噪点)",
+    "隐藏反爬文本": "清洗剔除反爬隐形水印 span(§4.1 噪点)",
     "隐私泄露": "人工复核命中原文(附录/明细节含值+上下文); 属实第三方 PII 按 §6 小写 x 占位脱敏(不得直接删除), 自披露/示例/代码值标注豁免",
     "疑似内网IP": "人工复核命中原文(明细节含 IP+上下文); 真实内网拓扑按 §6 x 占位脱敏, 文档示例地址/代码示例标注豁免",
     "疑似社交账号": "社交账号按 §6 x 占位脱敏",
@@ -1588,6 +1596,8 @@ class QaQC:
                       # §10 四、问答真实性校验
                       "source_missing": 0, "source_multi": 0, "source_model": 0,
                       "synthetic_q": 0, "oss_dataset": 0, "low_tier_model": 0,
+                      # §10 四、时间合理性(2026-09-21 杭州批全量核实: 813 倒挂/89981 相等, 原 E16 只查缺失)
+                      "time_inverted": 0, "time_equal": 0,
                       # §10 五、重复率校验
                       "near_dup": 0,
                       # §10 六、脱敏校验
@@ -1690,6 +1700,21 @@ class QaQC:
         if miss_t:
             self.add("ERROR", rid, "时间字段缺失",
                      f"metadata 缺 {miss_t}(代码问答统一要求保留, 不得删除)")
+        # 时间合理性(2026-09-21 杭州批 50 万全量核实: 倒挂 813 / 相等 89981, 原 E16 只查缺失):
+        #   倒挂(answer_time < question_time) ⇒ 硬缺陷, ERROR(回答不可能早于提问)。
+        #   相等(question_time == answer_time) ⇒ 信息性 WARN(18% 同秒问答强烈暗示采集端
+        #   批量填时间戳; 但真实"秒答"亦可能, 故 WARN 留复核不判 ERROR)。ISO8601 字符串
+        #   字典序 == 时间序(前缀一致时), 直接比较; 格式异常者跳过(不臆断)。
+        _qt, _at = meta.get("question_time"), meta.get("answer_time")
+        if isinstance(_qt, str) and isinstance(_at, str) and _qt and _at:
+            if _at < _qt:
+                st["time_inverted"] += 1
+                self.add("ERROR", rid, "时间倒挂",
+                         f"answer_time({_at}) 早于 question_time({_qt}), 回答不可能先于提问")
+            elif _at == _qt:
+                st["time_equal"] += 1
+                self.add("WARN", rid, "时间相等",
+                         f"question_time==answer_time({_qt}), 疑似采集端批量填充, 人工复核")
 
         # E17 token 数值字段必填(2026-09-15 起, 对所有代码问答数据生效):
         #   metadata.question_tokens / answer_tokens 不可缺失;
@@ -1732,7 +1757,7 @@ class QaQC:
         if m:
             st["hidden_span"] += 1
             self.add("ERROR", rid, "隐藏反爬文本",
-                     f"question 含隐形水印 span: {m.group(0)[:80]}…(LeetCode 防爬注入, 需剔除)")
+                     f"question 含隐形水印 span: {m.group(0)[:80]}…(站点反爬注入, 需剔除)")
 
         # E14 source 标注规范(§4.1: 纯社区问答标社区名; 真实提问+模型答案需分别标注)
         source = str(rec.get("source") or "").strip()
@@ -1879,25 +1904,38 @@ class QaQC:
         # 只判"真实资源": 外链图/内嵌 base64/blob 失效引用。
         # 代码示例、文件扩展名、"讨论 <img> 标签本身"的文字提及均豁免(误报根治)。
         # 命中原文: 逐字段提取代码块外真实非文本资源原串(img/md-img/blob/base64 前 80 字符)
-        _nt_hits = []
+        _nt_hits = []    # 图片/base64 真非文本资源 → ERROR
+        _blob_hits = []  # blob: 引用 → WARN(HTML5 合法 scheme, 纯文本天然失效, 不阻断)
         for t in message:
             if not isinstance(t, dict):
                 continue
             for fld in ("question", "answer"):
                 _body = strip_fenced(t.get(fld) or "")
-                for _rx in (RE_EXT_IMG, RE_EXT_MD_IMG, RE_BLOB_REF, RE_BASE64_EMBED):
+                for _rx in (RE_EXT_IMG, RE_EXT_MD_IMG, RE_BASE64_EMBED):
                     for _m in _rx.finditer(_body):
                         _nt_hits.append(f"[{fld}] {_m.group(0)[:80]}")
                         if len(_nt_hits) >= 3:
                             break
                     if len(_nt_hits) >= 3:
                         break
-            if len(_nt_hits) >= 3:
+                for _m in RE_BLOB_REF.finditer(_body):
+                    _blob_hits.append(f"[{fld}] {_m.group(0)[:80]}")
+                    if len(_blob_hits) >= 3:
+                        break
+            if len(_nt_hits) >= 3 and len(_blob_hits) >= 3:
                 break
         if _nt_hits:
             self.add("ERROR", rid, "非文本资源残留",
-                     "正文含外链图片/base64 内嵌/blob 失效引用(§4.1 须剔除; 代码块与 <img> 文字提及已豁免)"
+                     "正文含外链图片/base64 内嵌(§4.1 须剔除; 代码块与 <img> 文字提及已豁免)"
                      + "; 命中: " + " | ".join(_nt_hits))
+        # 2026-09-21 口径(杭州批 50 万全量核实 13 条误报): blob: 是 HTML5 合法 URL scheme,
+        # 在纯文本交付里天然失效(运行时 UUID), 不破坏自包含 ⇒ 从 ERROR 降为 WARN。
+        # 误报形态全是 CSP 源列表(img-src ... blob:)/console 输出(blob:null/UUID)/
+        # 讨论 blob API 的合法用法, 非真实图片资源。真图片残留走上方 ERROR, 不受影响。
+        if _blob_hits:
+            self.add("WARN", rid, "blob引用(失效)",
+                     "正文含 blob: URL(HTML5 合法 scheme, 纯文本里天然失效; 多为 CSP/console/blob API 讨论, §4.1 复核)"
+                     + "; 命中: " + " | ".join(_blob_hits))
 
         # E12 乱码(§4.3 低质过滤: "大量占位符、乱码"才剔除)
         # 2026-09-19 口径(客户确认): 单条 U+FFFD **≤ 5 个不算 ERROR** —— 个别
@@ -1937,10 +1975,18 @@ class QaQC:
                 pass  # 仅保留检测逻辑, 不累加 LQ1(误报率边界, 见上方注释)
 
         # 禁止内容关键词粗筛(§8/§4.2 LQ5)
+        # 2026-09-21 口径: 命中词属**题面叙事**(含 ≥2 个强题面标记, 如"输入格式"+"数据范围")
+        #   ⇒ 降级 WARN 留人工复核, 不判 ERROR(实测洛谷/USACO 题面叙事误报, 方向安全)。
         hit = [k for k in FORBIDDEN_KW if k in full_text]
         if hit:
             st["lq"]["LQ5_违规内容"] += 1
-            self.add("ERROR", rid, "疑似违规内容", f"命中: {hit}(§8)")
+            _prose = sum(1 for mk in _FORBIDDEN_PROSE_MARKERS if mk in full_text)
+            if _prose >= 2:
+                self.add("WARN", rid, "疑似违规内容(题面叙事)",
+                         f"命中: {hit}(§8) 但含 {_prose} 个题面标记(输入/输出格式/数据范围等), "
+                         f"倾向题面叙事包装, 人工复核")
+            else:
+                self.add("ERROR", rid, "疑似违规内容", f"命中: {hit}(§8)")
 
         # W1 token_count 校验(2026-09-15 起双口径):
         #   · 新口径(含 question_tokens/answer_tokens 拆分字段, tiktoken 真实计数):
@@ -2129,6 +2175,8 @@ class QaQC:
             ratio = top_cnt / n * 100
             row("ERROR" if ratio > LANG_LIMIT else "PASS",
                 f"单一语言占比 {ratio:.1f}%", f"{top_lang} {top_cnt}/{n}(红线 ≤{LANG_LIMIT}%)")
+            # 注: 不查"语言未识别占比"——论坛类问答可能无编程语言(纯文字求助/配置/文字方案),
+            # unknown 标注属合理(2026-09-21 曾加 >5% WARN, 用户拍板回退)
         # 多轮占比 ≥10%(E7)。构造性单轮数据集(SO 等无多轮场景)用 --exempt-multi-turn
         # 单列为 WARN: 不触发整体退回(需换源补采, 非清洗可解, 见 README/终检口径)。
         mt_ratio = st["multi_turn"] / n * 100
@@ -2159,7 +2207,7 @@ class QaQC:
                 f"字符 5-gram Jaccard≥{NEAR_DUP_JACCARD}(§4.2 LQ7 高度近似样本)")
         # 同题多解为设计口径, 不计问题(计数保留在 metadata)
         row("ERROR" if st["hidden_span"] else "PASS",
-            f"隐藏反爬文本 {st['hidden_span']} 条", "LeetCode 水印 span 需在清洗中剔除")
+            f"隐藏反爬文本 {st['hidden_span']} 条", "反爬水印 span 需在清洗中剔除")
         # 多轮配对不足全局(§9: 多轮 Q-A ≥3 组)
         mt_lt3 = st.get("multi_turn_lt3", 0)
         if st["multi_turn"]:
@@ -2173,6 +2221,13 @@ class QaQC:
         row("ERROR" if st["source_missing"] else "PASS",
             f"source标注缺失 {st['source_missing']} 条",
             f"多来源标注 {st['source_multi']} 条, 含模型来源 {st['source_model']} 条(§4.1 标注规范)")
+        # 时间合理性(2026-09-21 新增): 倒挂=硬缺陷(ERROR), 相等=疑似批量填充(WARN)
+        row("ERROR" if st["time_inverted"] else "PASS",
+            f"时间倒挂 {st['time_inverted']} 条",
+            "answer_time 早于 question_time(回答不可能先于提问, 须整改)")
+        row("WARN" if st["time_equal"] else "PASS",
+            f"时间相等 {st['time_equal']} 条",
+            "question_time==answer_time(疑似采集端批量填时间戳, 人工复核)")
         row("WARN" if st["synthetic_q"] else "PASS",
             f"疑似合成提问 {st['synthetic_q']} 条", "命中合成特征串, 需人工复核(§4.1 禁止合成虚构提问)")
         row("ERROR" if st["oss_dataset"] else "PASS",
