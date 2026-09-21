@@ -313,8 +313,20 @@ _TEMPLATE_LOCAL_HEAD = re.compile(
     r'login)\w*(?:\+\w+)?|(?:whatever|first|last)[\w.]*)$')
 
 
+# 公共项目/团队官方地址(非个人 PII, 项目变更日志/维护块里的官方团队收件地址, 任何
+# 开发者都可见且不可定位到具体个人): 2026-09-21 GH Issues 86 万全量核实误报
+# (PETSc 变更日志 petsc-maint@mcs.anl.gov / FreeBSD 端口 fortran@FreeBSD.org)。
+# 精确小写全等 — 不 prefix 不泛化, 绝不波及同域的任何个人邮箱(红线方向: 宁少删)。
+_PUBLIC_PROJECT_EMAILS = frozenset({
+    "petsc-maint@mcs.anl.gov",  # PETSc 官方维护团队列表
+    "fortran@freebsd.org",      # FreeBSD fortran 项目维护列表
+})
+
+
 def _email_value_excluded(v):
     """取值排除: 占位 local/域、服务域、内网域、crypto 算法 id、全大写域、虚构名。"""
+    if v.lower() in _PUBLIC_PROJECT_EMAILS:
+        return True
     local = v.split("@")[0]
     dom_raw = v.split("@")[-1]
     dom = dom_raw.lower()
@@ -504,12 +516,29 @@ def _is_fictitious_phone(num):
     return False
 
 
+# ulimit/getconf/sysctl 输出里"数值 + 系统资源标签"是资源上限值, 非手机号。
+# 2026-09-21 GH Issues 86 万全量核实误报: "18132713472  maximum resident set size"
+# (≈17TB 的常驻内存上限) 被 1[3-9]\d{9} 误判为手机号。数字后紧跟系统资源标签 ⇒ 排除。
+# 保守设计: 仅当数字后(跨 ≤2 空格)出现明确的 ulimit/getconf 资源名词才排除,
+# 真实"手机号 + 标签"极罕见, 误删风险低; 仍保留孤立真号命中能力。
+_SYS_RESOURCE_LABEL = re.compile(
+    r'\s{0,2}(?:maximum\s+resident\s+set\s+size|'
+    r'file\s+size|address\s+space|stack\s+size|'
+    r'core\s+file\s+size|open\s+files|processes|'
+    r'memory\s+lock|swaps|pipes|time|priority|'
+    r'block\s+size|buffer\s+size|file\s+system\s+blocks|'
+    r'socket\s+buffering|arg\s+max|stack\s+size)',
+    re.I)
+
+
 def _phone_should_flag(prose, s, e):
     num = prose[s:e]
     if _is_fictitious_phone(num):
         return False
     if _num_ctx_excluded(prose, s, e):
         return False
+    if _SYS_RESOURCE_LABEL.match(prose[e:e + 60]):
+        return False  # ulimit/getconf 系统资源值, 非手机号
     return True
 
 
