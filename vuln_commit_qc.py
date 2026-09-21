@@ -117,22 +117,28 @@ log = logging.getLogger("vuln_qc")
 
 def read_jsonl(path):
     records, errors = [], []
-    with open(path, "rb") as f:
-        raw = f.read()
-    bom = raw.startswith(b"\xef\xbb\xbf")
+    # 注意: 不用 text.splitlines() —— 它按 Unicode 行界符(含 \x0b\x0c\x85\u2028 等)切分,
+    # 会把含这些控制符的合法 JSON 记录从中间误切导致解析失败。改为标准逐行迭代(仅 \n 分行)。
+    bom = False
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise SystemExit(f"[FATAL] {path} 非 UTF-8 编码: {e}")
-    if bom:
-        log.warning("%s 含 UTF-8 BOM", path)
-    for idx, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError as e:
-            errors.append((idx, str(e)))
+        f = open(path, "r", encoding="utf-8")
+    except OSError as e:
+        raise SystemExit(f"[FATAL] {path} 打开失败: {e}")
+    with f:
+        first = f.read(1)
+        if first == "\ufeff":
+            bom = True
+            log.warning("%s 含 UTF-8 BOM", path)
+        else:
+            f.seek(0)
+        for idx, line in enumerate(f, 1):
+            line = line.rstrip("\n").rstrip("\r")
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                errors.append((idx, str(e)))
     return records, errors, bom
 
 
