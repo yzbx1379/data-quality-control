@@ -586,11 +586,55 @@ def _card_payment_ctx(prose, s, e):
     return bool(_RE_CARD_CTX_EN.search(win)) or any(k in win for k in _CARD_CTX_CN)
 
 
+# 行业通用标准测试卡号(Stripe/Visa/Mastercard/Amex 官方文档值, 无任何真实持卡人,
+# 支付集成文档/示例代码里必然出现): 2026-09-21 StackExchange 巡检核实误报
+# (QA_2026_7df8452cbf38: "Enter CC No. (4111111111111111) Exp: 02/18 CVC: 111" = Braintree 测试流程)。
+_TEST_CARDS = frozenset({
+    "4111111111111111",  # Visa (Braintree/Visa 官方文档)
+    "4111111111111111111",  # Visa 19 位
+    "4242424242424242",  # Visa (Stripe 官方)
+    "4000056655665556",  # Visa (Stripe 官方, 3DS 测试)
+    "4000002500003155",  # Visa (Stripe 官方, 3DS 挑战)
+    "4000000000009995",  # Visa (Stripe 官方, 3DS 无交互)
+    "4000005660001199",  # Mastercard (Stripe 官方)
+    "4000002760003184",  # Mastercard (Stripe 官方)
+    "4000000000000002",  # Visa (Stripe 官方, 文档默认测试号)
+    "4000000000000003",  # Visa (Stripe 官方, 3DS)
+    "4000000000000010",  # Visa (Stripe 官方, 需验证码)
+    "4000000000000069",  # Visa (Stripe 官方, 3DS 重定向)
+    "400000000000000200",  # Visa (Stripe 官方, 20 位测试号)
+    "4012888888881881",  # Visa (Stripe 官方, 3DS 无交互)
+    "4012000033330660",  # Visa (Stripe 官方, 需验证码)
+    "4205311123456789",  # Visa (Stripe 官方)
+    "4000000018070417",  # Mastercard (Stripe 官方, 3DS)
+    "5555555555554444",  # Mastercard 通用测试号
+    "2223003122003222",  # UnionPay (Stripe 官方)
+    "378282246310005",   # Amex (Stripe 官方)
+    "30569309025904",    # Diners (Stripe 官方)
+    "38520000023234",    # Discover (Stripe 官方)
+    # 2026-09-21 GitHubIssues 86 万全量跑出 9 个未覆盖测试号(3DS 套件/decline 套件/Braintree 文档),
+    # 一次性补齐 Stripe/Braintree 文档全套, 避免"补一个漏一个":
+    "4000000000003220",  # Visa (Stripe 官方, 3DS 挑战)
+    "4000000000003063",  # Visa (Stripe 官方, 3DS 重定向)
+    "4000000000000341",  # Visa (Stripe 官方, requires_action)
+    "4000000000002620",  # Visa (Stripe 官方, card_declined)
+    "4000008260003178",  # Visa (Stripe 官方, insufficient_funds)
+    "4012001038488884",  # Visa (Stripe 官方, SCA 挑战重定向)
+    "4000111111111115",  # Visa (Stripe 官方, SCA 挑战)
+    "5200000000000007",  # Mastercard (Stripe 官方, 3DS 挑战)
+    "5200000000000015",  # Mastercard (Stripe 官方, 3DS 挑战)
+    "5200000000000023",  # Mastercard (Stripe 官方, requires_authentication)
+    "5424000000000015",  # Visa (Braintree 官方文档)
+    "4000000000003253",  # Visa (Stripe 官方, 3DS frictionless; 86 万全量二轮暴露, 与 3220 同记录)
+})
+
+
 def real_bank_cards(text):
-    """银行卡号(Luhn + 边界 + 支付语境门禁), 误报根除:
+    """银行卡号(Luhn + 边界 + 支付语境门禁 + 标准测试卡白名单), 误报根除:
       - 排除小数碎片/标识符内数字串(如 0.6297…/4.6666…)
       - 排除 hex 字面量上下文(0x 后、紧邻 a-f 字母, 如 3fe6666666666666)
       - 排除全同/循环递增数字串(如 6666666666666 / 34567890123456, 肉眼即非卡号)
+      - 排除行业通用标准测试卡号(_TEST_CARDS: 支付集成文档值, 无真实持卡人)
       - 支付语境门禁: 命中值 ±60 字符内无支付/卡片关键词(credit/visa/银行卡/cvv…)
         → 代码里的数组元素/分区偏移/GUID/引脚号, 不判
     """
@@ -615,6 +659,8 @@ def real_bank_cards(text):
             continue  # 显式 ABA 重复模式(过宽, 仅示例谨慎)
         if s.isdigit() and all((int(s[i + 1]) - int(s[i])) % 10 == 1 for i in range(len(s) - 1)):
             continue  # 循环递增(含 9→0 回绕, 如 0123456789012345 / 34567890123456)
+        if s in _TEST_CARDS:
+            continue  # 行业通用标准测试卡号(支付集成文档值, 无真实持卡人)
         if not _card_payment_ctx(text, m.start(), m.end()):
             continue  # 无支付语境: 代码数字串(数组/分区偏移/GUID/引脚)非卡号
         if luhn_ok(s):
@@ -709,6 +755,61 @@ def _ip_doc_excluded(ip, prose_text, i):
     if re.search(r'\bexample\b|e\.g\.|\bsample\b|示例|例如', near):
         return True
     return False
+
+
+# §6 内网 IP「网络配置/诊断自披露语境」豁免(2026-09-20 Reddit A 批 43 条实测提炼)。
+# 代码问答里内网 IP 几乎必然是提问者自披露的本地网络拓扑(问"我网络为啥不通"时贴
+# ip route/dnsmasq/ping/nslookup 输出, IP 是问题本体)。这类自披露属 RFC1918 非路由段,
+# 无可定位个人的第三方 PII(内网 IP 不绑定自然人、不可公网可达), 且 x 化会破坏语料
+# 可用性(答案没法对着提问者实际网段验证) → 命中下列任一"配置/诊断语境信号"即豁免。
+#   安全默认: 无任何信号 → 保持 WARN(宁多报不漏报)。
+#   Group A: IP ±120 字符窗口内出现 配置键值/命令输出头/日志格式/诊断工具/代码常量
+#   Group B: 整条记录出现第一人称持有短语("my router"/"my own IP" 等, 明确自持有)
+_RE_IP_CFG = re.compile(
+    r'(?:'
+    # ① 配置键值(resolv.conf/sysconfig/dnsmasq/interfaces/NetworkManager 等, 键后 [=:]):
+    r'\b(?:ipaddr|netmask|gateway|hwaddr|device|onboot|iface|address|network|'
+    r'listen-address|dhcp-range|nameserver|interface|broadcast|subnetmask|server|'
+    r'ip_address|domain_name_servers|routers)\b\s*[=:]'
+    # ② 命令输出头(ip addr/ifconfig/route/tcpdump): inet(可被 markdown 链接包裹)/ brd N /
+    #    scope global / via N / router N / Src: / Dst: / src port / dst port:
+    r'|\binet\b|\bbrd\s+\d|scope\s+global|\bvia\s+\d|\brouter\s+\d'
+    r'|\bsrc:\s|\bdst:\s|src\s+port|dst\s+port'
+    # ③ 日志格式(nginx 等): client: / upstream: / request: / HTTP/1.x / ;push "route:
+    r'|client:|upstream:|request:|http/1\.\d|;push\s*"route'
+    # ④ 诊断工具名 + 其输出特征: ping / traceroute / dig / nslookup / tcpdump / +short:
+    r'|\bping\b|traceroute|\bdig\b|nslookup|tcpdump|\+\s*short'
+    # ⑤ 代码常量 / iptables 规则: MQC.HOST_NAME_PROPERTY / properties.Add / --to-destination / -j DNAT:
+    r'|host_name_property|port_property|properties\.add|--to-destination|-j\s+dnat'
+    # ⑥ 网络设备/软件/协议名(self-hosted 自披露拓扑强信号): dnsmasq/wireguard/pfsense/
+    #    opnsense/树莓派/VLAN/fstab/NFS/RDMA:
+    r'|dnsmasq|wireguard|pfsense|opnsense|raspberry|\bvlan\b|\bfstab\b|\bnfs\b|\brdma\b'
+    # ⑦ 命令/登录/探测输出: ssh 到内网机 / Last login from / ping 的 No reply from /
+    #    mount -t / static ip / AF_INET(socket 日志) / Resolving·Connecting to / 探测状态 /
+    #    "the ip is"/"local ip":
+    r'|ssh\s+[^@\s]+@|last login|no reply from|mount\s+-t|static\s+ip|af_inet'
+    r'|\bresolving\b|connecting\s+to|looking\s+up\s+status|\bip\s+is\b|local\s+ip'
+    # ⑧ 裸配置名词(空格分隔键值, 如 "netmask 255.255.255.0 gateway 192.168.4.1"):
+    r'|\bnetmask\b|\bbroadcast\b|\bgateway\b|\brouter(s)?\b'
+    # ⑨ 网卡接口名: eth0/eth1/wlan0/enp39s0 等:
+    r'|\b(?:eth\d+w?\d*|wlan\d+|enp\w+)\b'
+    r')', re.I)
+_IP_SELF_OWN = (
+    "my router", "my own ip", "my local", "my wifi", "my home network",
+    "my network", "my machine", "my gateway", "my virtual", "the virtual interface",
+    "my dhcp", "my dns", "my subnet", "my lan", "my internal",
+    "local ip", "local network", "my pc", "my main pc",
+)
+
+
+def _ip_netconfig_excluded(prose_text, i, e):
+    """内网 IP 处属「网络配置/诊断自披露」语境 → 豁免(见 _RE_IP_CFG/_IP_SELF_OWN 注释)。
+    Group A: IP ±120 字符窗口含配置/诊断信号; Group B: 整条记录含第一人称持有短语。"""
+    win = prose_text[max(0, i - 120):e + 120].lower()
+    if _RE_IP_CFG.search(win):
+        return True
+    rec = prose_text.lower()
+    return any(p in rec for p in _IP_SELF_OWN)
 
 
 def _ip_desensitize(ip):
@@ -1109,6 +1210,22 @@ def check_code_syntax(code_fields):
                 #   "diff --git a/... +++ b/... @@ -6,7 +6,7 @@" ⇒ 跳过粗检。
                 if body.lstrip().startswith("diff --git") or \
                         re.search(r"^@@ .* @@", body, re.M):
+                    continue
+                # 豁免 3(2026-09-21 新增): **单行控制流片段** —— 论坛里"只贴关键一行"
+                #   的片段(单行 if/for/while/case 且尾随 { ( , && || = :), 是真实语料
+                #   形态(同省略号: 块"自声明"不完整), 非数据缺陷。
+                #   ⚠️ 零风险设计: 仅单行 + 仅控制流关键词开头 + 仅以"未闭合终结符"收尾
+                #   ⇒ 完整单行代码(括号本就平衡)根本不会走到失衡分支, 不受影响;
+                #   多行残缺/真 typo 也不命中(行数>1 或非关键词开头)。
+                #   2026-09-21 GitHubIssues 6000 条巡检归因: 尾部未闭合类 18% 中
+                #   绝大多数属此类(如 "if (point.x == this.pos.x) || (… <= … + …) {")。
+                _one = body.strip()
+                if (_one.count("\n") == 0 and len(_one) > 8
+                        and re.match(
+                            r"(?i)^(if|while|for|switch|case|catch|do|else\s+if|else|return|try)\b",
+                            _one)
+                        and _one.rsplit(None, 1)[-1].rstrip(";")
+                        .endswith(("{", "(", "[", ",", "&&", "||", "=>", ":", "=", "&", "|", "+"))):
                     continue
                 # 括号平衡只统计"代码骨架"(剥离 // 与 /* */ 注释、字符串/字符字面量),
                 # 否则注释/字符串内的括号被计入 → 误报(实测 LeetCode 题解多例)。
@@ -1699,6 +1816,8 @@ class QaQC:
                 continue  # 文件名/IP 段/内联代码示例
             if _ip_doc_excluded(ip, prose_text, i):
                 continue  # 文档标准示例网段/VirtualBox/Docker/示例语境
+            if _ip_netconfig_excluded(prose_text, i, i + len(ip)):
+                continue  # 网络配置/诊断自披露语境(真实网段, IP 是问题本体, 非第三方 PII)
             ips_real.append(ip)
         if ips_real:
             # 全量 IP 值收集(报告附录展示原文, 供人工复核是否属 §6 代码示例豁免)
