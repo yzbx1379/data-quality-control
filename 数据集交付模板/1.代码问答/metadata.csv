@@ -1,0 +1,46 @@
+﻿=== 总体统计 ===
+统计项,数值
+总样本条数,22847
+单轮问答条数,22847
+多轮问答条数,0
+总tokens(tiktoken o200k_base 真实计数),33078852
+question_tokens 累计,16175386
+answer_tokens 累计,16903466
+完全重复(流式md5快检)条数,0
+"完全重复率(快检,%)",0.0000
+最高question_score,0
+
+=== 新口径合规(2026-09-14/15) ===
+检查项,异常数
+domain 非数组,0
+缺 question_time,0
+缺 answer_time,0
+token_count != question+answer,0
+tokenizer 分布,tiktoken/o200k_base×22847
+
+=== 编程语言分布 ===
+语言,样本数,占比%
+cpp,18578,81.3
+python,2538,11.1
+java,1240,5.4
+c,172,0.8
+rust,157,0.7
+javascript,59,0.3
+go,49,0.2
+csharp,33,0.1
+php,17,0.1
+typescript,4,0.0
+
+=== 来源分布 ===
+来源,样本数
+CodeChef,22847
+
+=== domain(主领域)分布 ===
+domain,样本数,占比%
+codechef,22847,100.0
+
+=== question_score 分布 ===
+区间,样本数
+≥1000,0
+100-999,0
+<100,0

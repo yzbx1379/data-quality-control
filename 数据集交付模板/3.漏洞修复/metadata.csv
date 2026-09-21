@@ -1,0 +1,76 @@
+﻿统计项,数值
+总样本条数,10
+总存储空间(bytes),404992
+总存储空间,395.50 KB
+text字段总字符数(含键值对),3302
+代码文件总字符数(commit_message+vulnerable_code+fixed_code+unified_diff),374774
+总Tokens估算(英文4字符≈1token),94519
+complete_code_fetched=true条数,10
+CVSS评分覆盖条数,10
+,
+=== 数据来源渠道分布 ===,记录数
+NVD + GitHub,10
+,
+=== 项目组织来源分布 ===,记录数
+envoyproxy,1
+pytorchlightning,1
+hazelcast,1
+unshiftio,1
+ljharb,1
+zulip,1
+janko,1
+JamesNK,1
+onnx,1
+tokio-rs,1
+,
+=== 编程语言分布 ===,记录数
+C++,2
+Python,2
+JavaScript,2
+Java,1
+Ruby,1
+C#,1
+Rust,1
+,
+=== CVE编号年份分布 ===,记录数
+2022,7
+2024,3
+,
+=== 严重程度分布 ===,记录数
+CRITICAL,5
+HIGH,4
+MEDIUM,1
+,
+=== 漏洞类型分布 ===,记录数
+Authorization Bypass,2
+OS Command Injection,2
+Other,1
+Code Injection,1
+XXE,1
+Denial of Service,1
+Out-of-Bounds Read,1
+Use-After-Free,1
+,
+=== CWE分类分布 ===,记录数
+"[""CWE-125""]",1
+"[""CWE-20"", ""NVD-CWE-Other""]",1
+"[""CWE-284"", ""CWE-863"", ""NVD-CWE-Other""]",1
+"[""CWE-295""]",1
+"[""CWE-416"", ""CWE-672""]",1
+"[""CWE-611""]",1
+"[""CWE-639""]",1
+"[""CWE-755""]",1
+"[""CWE-78""]",1
+"[""CWE-94""]",1
+,
+=== License分布(AI训练授权口径) ===,记录数
+Apache-2.0,5
+MIT,5
+,
+=== 脱敏/去武器化覆盖 ===,数值
+diff From:行邮箱明文残留,0/10
+真实邮箱/PII泄露,0 条
+,
+=== 全局重复率检测(unified_diff规范化后MD5) ===,数值
+精确重复条数,0
+全局重复率(%),0.00%
