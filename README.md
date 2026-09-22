@@ -119,7 +119,7 @@
 | `metadata.type`                                            | string        | 是   | 固定值 `general_code_qa_dict`                                                                                 |
 | `metadata.ac_*`                                            | string        | 否   | 竞赛类来源专有：`ac_contest` / `ac_task` / `ac_submission_id` / `ac_user` / `ac_original_language` / `ac_url` |
 | `metadata.question_time` / `answer_time`                   | string        | 是   | ISO8601 时间                                                                                                  |
-| `metadata.question_tokens` / `answer_tokens` / `tokenizer` | int / string  | 是   | 分项 token 数与分词器标识                                                                                     |
+| `metadata.question_tokens` / `answer_tokens` / `tokenizer` | int / string  | 是   | 分项 token 数与分词器标识，`tokenizer` **固定值 `tiktoken/o200k_base`**                                       |
 
 验收硬指标：单一语言占比 ≤30%、多轮问答占比 ≥10%、重复率 <0.5%、字段全必填、`id` 唯一；正文禁残留图片 / 二进制等非文本资源，隐私须脱敏，禁止混入公开问答数据集与人工 / 大模型合成的虚构提问。
 
@@ -146,19 +146,19 @@
 }
 ```
 
-| 字段                     | 类型          | 必填 | 说明                                                                        |
-| ------------------------ | ------------- | ---- | --------------------------------------------------------------------------- |
-| `id`                     | string        | 是   | 记录 ID（样例为 6 位数字串）                                                |
-| `content`                | string        | 是   | 正文（Markdown），严禁截断；图片须自包含                                    |
-| `meta.title`             | string        | 是   | 标题                                                                        |
-| `meta.url`               | string        | 是   | 原文链接，全局唯一（URL 重复率 ≤2%）                                        |
-| `meta.source_platform`   | string        | 是   | 来源平台（样例取值：`安全客` / `先知社区`）                                 |
-| `meta.author_or_org`     | string        | 是   | 作者或机构                                                                  |
-| `meta.publish_time`      | string        | 是   | 发布时间，样例格式 `YYYY-MM-DD HH:MM`                                       |
-| `meta.content_category`  | string        | 是   | 内容分类（样例取值：`漏洞分析` / `注入` / `RCE` / `恶意样本` / `应急工具`） |
-| `meta.is_original`       | bool          | 是   | 是否原创                                                                    |
+| 字段                     | 类型          | 必填 | 说明                                                                                                                                     |
+| ------------------------ | ------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                     | string        | 是   | 记录 ID（样例为 6 位数字串）                                                                                                             |
+| `content`                | string        | 是   | 正文（Markdown），严禁截断；图片须自包含                                                                                                 |
+| `meta.title`             | string        | 是   | 标题                                                                                                                                     |
+| `meta.url`               | string        | 是   | 原文链接，全局唯一（URL 重复率 ≤2%）                                                                                                     |
+| `meta.source_platform`   | string        | 是   | 来源平台（样例取值：`安全客` / `先知社区`）                                                                                              |
+| `meta.author_or_org`     | string        | 是   | 作者或机构                                                                                                                               |
+| `meta.publish_time`      | string        | 是   | 发布时间，样例格式 `YYYY-MM-DD HH:MM`                                                                                                    |
+| `meta.content_category`  | string        | 是   | 内容分类（样例取值：`漏洞分析` / `注入` / `RCE` / `恶意样本` / `应急工具`）                                                              |
+| `meta.is_original`       | bool          | 是   | 是否原创                                                                                                                                 |
 | `meta.primary_languages` | array[string] | 是   | 语言类型标注：**仅在文章实际包含代码时**标注涉及的语言（样例取值：`Python` / `PHP` / `C++` / `汇编`）；**文章不含代码时填 `"N/A"`** 标识 |
-| `meta.related_cves`      | array[string] | 是   | 关联 CVE 编号，无则空数组                                                   |
+| `meta.related_cves`      | array[string] | 是   | 关联 CVE 编号，无则空数组                                                                                                                |
 
 验收硬指标：权威源覆盖率 ≥95%、必填字段缺失率 ≤1%、重复率（URL / 正文）≤2%、非技术内容占比 ≤0.5%、单一语言占比 ≤30%；正文不得截断（如以 `poc:` / `exp:` / 冒号结尾）、图片不得残留 `blob:` 或未内嵌外链、隐私须匿名化、IOC 须去武器化（Defang）。
 
@@ -228,6 +228,46 @@
 | `meta.primary_file`                             | string         | 是   | 被修复的主文件路径                                                                                                                                                         |
 
 验收硬指标：代码四件套（`commit_message` + `vulnerable_code` + `fixed_code` + `unified_diff`）齐全、`vulnerable_code + unified_diff = fixed_code` 自洽、有效代码 ≥5 行、单一语言占比 ≤30%、近 3 年 CVE 占比 ≥30%、Revert / 无效修复样本 ≤0.5%、不完整性文本 ≤0.5%；须剔除 revert / 纯文档变更，主文件不得误选文档文件（`.md` / `.txt` / `.rst` 等），代码脱敏须用语法安全占位符（严禁纯 `x` 覆盖）。
+
+## 🤖 数据样例AI质检提示词
+
+将下述提示词连同**样例 JSONL（或抽中子集）**一起交给大模型，即可按本仓库规则做逐条 AI 质检。AI 结论**仅供参考**，WARN/FAIL 项须人工复核（见[重要声明](#️-重要声明检测结果仅供参考)）。
+
+使用建议：AI 逐条比对成本高（尤其含 base64 图片的博客样例），建议按规范书"随机抽检 ≥1%"抽 10~50 条进行；`text` / `content` 中的 base64 图片载荷请先剔除再投喂。
+
+```text
+你是一名资深数据质检员。请依据以下规则对给定样例逐条质检，并输出结构化报告。
+
+【被检数据】{样例文件/记录}（JSONL，每行一条）
+【数据集类型】{代码问答 | 安全技术博客 | 漏洞修复 commit}
+
+【质检步骤】对每条记录依次执行：
+  1. 结构与字段完整性：对照字段表检查缺失/类型/空值。
+  2. 字段标注合理性：逐字段与正文互证。例如——
+     - 代码问答：metadata.primary_language 是否与 answer 代码的实际语言一致；domain 标签是否与题面相符；
+       token 计数是否与文本量级一致；id 是否与 ac_contest/ac_task/ac_submission_id 对应
+     - 博客：title/content_category/publish_time/author 是否与正文一致；related_cves 中的 CVE 编号
+       是否真在正文出现；primary_languages 标注的语言是否真有对应代码；is_original 有无依据
+     - 漏洞修复：cve_id/项目名/语言/severity/cvss/cwe 是否与 NVD 一致；fix_commit_hash 与 github_url 是否对应；
+       primary_file 是否真是被修复的主代码文件
+  3. 与原始来源逐一对比（记录中有 url / ac_url / github_url 时必须执行）：
+     - 访问原始网址，比对 标题、正文/题面、关键数字（约束、分数、日期、CVSS）、代码块、样例
+     - 重点甄别三类问题：① 截断（原文有而样例在句中/段中戛然而止）；② 遗漏（整段/整节/样例缺失）；
+       ③ 不一致（数字、名称、代码、结论与原文矛盾）
+     - 注意：样例做过脱敏与格式清洗，空白/大小写/图片占位差异不算不一致；语义级缺失才算
+  4. 内容安全与合规：隐私明文、未去武器化 IOC、涉密表述、违规内容。
+  5. 汇总硬指标：对整批样本计算语言占比、重复率（规范化后 MD5）、必填字段缺失率，对照阈值。
+
+【输出格式】
+  A. 逐条结论表：| 记录id | 总评(PASS/WARN/FAIL) | 问题类别(截断/遗漏/不一致/标注错误/合规) | 证据（原文片段 vs 样例片段）| 建议 |
+  B. 整批汇总：各问题类别计数、硬指标达标情况、抽查覆盖率
+  C. 声明：本结论为 AI 辅助质检，仅供参考，WARN/FAIL 项须经人工复核后方可作为验收依据。
+
+【约束】
+  - 不确定就标注 WARN 并写明"需人工复核"，不得臆断 FAIL
+  - 原始网址无法访问时注明"来源不可达"，不得凭空判定一致或不一致
+  - 引用证据必须摘自原文与样例原文，不得编造
+```
 
 ## 特性
 
