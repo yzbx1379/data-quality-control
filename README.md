@@ -157,7 +157,7 @@
 | `meta.publish_time`      | string        | 是   | 发布时间，样例格式 `YYYY-MM-DD HH:MM`                                       |
 | `meta.content_category`  | string        | 是   | 内容分类（样例取值：`漏洞分析` / `注入` / `RCE` / `恶意样本` / `应急工具`） |
 | `meta.is_original`       | bool          | 是   | 是否原创                                                                    |
-| `meta.primary_languages` | array[string] | 是   | 涉及的编程语言，无则空数组（样例取值：`Python` / `PHP` / `C++` / `汇编`）   |
+| `meta.primary_languages` | array[string] | 是   | 语言类型标注：**仅在文章实际包含代码时**标注涉及的语言（样例取值：`Python` / `PHP` / `C++` / `汇编`）；**文章不含代码时填 `"N/A"`** 标识 |
 | `meta.related_cves`      | array[string] | 是   | 关联 CVE 编号，无则空数组                                                   |
 
 验收硬指标：权威源覆盖率 ≥95%、必填字段缺失率 ≤1%、重复率（URL / 正文）≤2%、非技术内容占比 ≤0.5%、单一语言占比 ≤30%；正文不得截断（如以 `poc:` / `exp:` / 冒号结尾）、图片不得残留 `blob:` 或未内嵌外链、隐私须匿名化、IOC 须去武器化（Defang）。

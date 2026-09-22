@@ -26,7 +26,7 @@ JSONL，UTF-8 无 BOM，每行一条，结构 `{id, content, meta}`：
 
   * 必填 7 字段：`title / url / source_platform / author_or_org / publish_time / content_category / is_original`
 
-  * 条件字段：`primary_languages`（数组，可空）、`related_cves`（数组，可空）
+  * 条件字段：`primary_languages`（**仅在文章实际包含代码时**标注语言；不含代码填 `"N/A"`）、`related_cves`（数组，可空）
 
 ## 3. 采集流程
 
