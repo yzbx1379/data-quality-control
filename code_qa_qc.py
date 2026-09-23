@@ -1889,7 +1889,17 @@ class QaQC:
         # E9 隐私明文(§6 匿名化清单: 手机号/真实邮箱/身份证 → ERROR; 银行卡 → 仅统计)
         # 银行卡 Luhn 对代码数据里随机数字串(FileID/hex/serialVersionUID)误报 100%,
         # 无告警价值, 仅统计保留命中数。
-        prose_text = strip_fenced(full_text)
+        #
+        # ★★ 2026-09-23 口径统一（用户拍板）：**逐字段 prose**，与 E11 同口径。
+        #   原为 `strip_fenced(full_text)`（**跨 Q/A 字段合并**）—— 合并会改变围栏配对，
+        #   把「围栏错位」的代码块内容当正文 ⇒ 实测 julia 一条 **env 转储里的 `SSH_CLIENT=192.168.2.2`**
+        #   被误判为内网 IP 泄露（逐字段口径下命中 0）。§6 的代码示例豁免要求按段取文。
+        #   依据铁律：**隐私项为 WARN 级 ⇒ 精确性优先于覆盖率**。
+        prose_text = "\n".join(
+            seg
+            for _t in message if isinstance(_t, dict)
+            for _fld in ("question", "answer")
+            for seg in _prose_segments(_t.get(_fld) or ""))
         # 数学表达式豁免(见 RE_MATH_SPAN 注释): $...$ 内是题面数学内容
         prose_text = RE_MATH_SPAN.sub(" ", prose_text)
         # 样例段豁免(见 RE_SAMPLE_SPAN 注释): 【样例】内是题目测试数据
