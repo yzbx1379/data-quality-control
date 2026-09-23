@@ -665,7 +665,7 @@ def write_reports(out_dir, qc, files_meta, started_at, sample_pct=0, sampled_n=0
     comp = [  # 二、数据完整性
         ("样本总数", "✅", f"{n} 条"),
         ("正文非空", "❌" if st["content_missing"] else "✅", f"空正文 {st['content_missing']}/{n} 条"),
-        ("正文长度达标(≥500字)", "⚠️" if st["content_short"] else "✅", f"过短 {st['content_short']}/{n} 条"),
+        (f"正文长度达标(≥{MIN_CONTENT_CHARS}字)", "⚠️" if st["content_short"] else "✅", f"过短 {st['content_short']}/{n} 条"),
         ("必填 meta 字段完整", "❌" if st["field_missing"] else "✅",
          f"缺失 {st['field_missing']}/{n} 条(阈值 ≤1%, 实测 {fm_rate:.2f}%)"),
         ("正文无截断(PoC/空小节)", "❌" if st["trunc"] else "✅",
