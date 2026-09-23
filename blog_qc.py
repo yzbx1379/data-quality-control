@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sys
+import time
 
 # ----------------------------------------------------------------------------
 # 常量: 规范书口径
@@ -67,13 +68,18 @@ RE_PHONE = re.compile(r'(?<![0-9a-fA-F])1[3-9]\d{9}(?![0-9a-fA-F])')
 RE_EMAIL = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+')
 EMAIL_WHITELIST = ("example.com", "example.org", "example.net", "test.com")  # RFC 测试值合规
 RE_EMAIL_ANON = re.compile(r'^x+@x+\.')  # xxxx@xxxx.com 为 x 占位脱敏形式(合规)
+# 示例/本地域名后缀(test*/localhost 等教学/CTF 环境域名, 非真实邮箱)
+RE_EMAIL_EXAMPLE = re.compile(r'@((example|test|sample|localhost)[a-z0-9-]*\.[a-z.]+|[a-z0-9-]+\.localhost)(\.[a-z]+)*$', re.I)
+# 身份证出现在花括号内(flag{...}/palu{...} 等 CTF 提交流) 视为 CTF 数据, 非真实 PII
+RE_ID_IN_FLAG = re.compile(r'\{[^{}]*\}')
 RE_IDCARD = re.compile(r'(?<![0-9Xx])\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:[0-2]\d|3[01])\d{3}[0-9Xx](?![0-9Xx])')
 # §9.6 内网 IP 须替换为 RFC 测试值(10.x.x.x 为合规替换值; 192.168/172.16-31 私网段为漏脱敏)
 RE_PRIV_IP = re.compile(
     r'(?<![\d.])(?:192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![\d.])')
 
-# §6.1 代码块损坏: ``` 围栏数量为奇数即未闭合(排版严重错乱/代码块损坏过滤)
-RE_CODE_FENCE = re.compile(r'^```', re.M)
+# §6.1 代码块损坏: 围栏未配平即未闭合(排版严重错乱/代码块损坏过滤)
+# 围栏行: 允许缩进, >=3 反引号开块, 后跟 info string
+RE_FENCE_LINE = re.compile(r'^\s*(`{3,})\s*(.*)$')
 
 # §4.1.6 涉漏洞文章须标注 CVE 编号及影响版本
 RE_CVE_MENTION = re.compile(r'(?<![\w-])CVE-\d{4}-\d{4,7}(?![\w-])', re.I)
@@ -89,12 +95,54 @@ EMPTY_SECTION_KEYWORDS = ("代码", "实现", "利用", "验证", "复现", "结
 RE_UNDEFANGED_IP_URL = re.compile(r'(?<![0-9.])h?t?t?p?s?:(?://|\.)?/?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', re.I)
 RE_DEFANG_MARK = re.compile(r'\[\.\]|\[:\/\]|hxxp', re.I)
 
+
+def _is_excluded_ip(ip):
+    """非 IOC 的 IP, 不需要去武器化:
+    - 回环/未指定/全广播: 127.x / 0.0.0.0 / 255.255.255.255
+    - 链路本地/云元数据: 169.254.x.x (169.254.169.254 是云厂商 IMDS, 教学高频)
+    - 文档保留段(RFC 5737/3330): 192.0.2.x / 198.51.100.x / 203.0.113.x / 100.64-127.x
+    - 私网段: 10.x / 172.16-31.x (本机实验环境, 非公网 IOC; 漏脱敏由 E10 内网IP项负责)
+    - 公共解析/教学示例: 1.1.1.1 / 8.8.x.x / 114.114.x.x / 1.2.3.4 / 9.9.9.9 (教程示例域名)"""
+    p = ip.split(".")
+    try:
+        p = [int(x) for x in p]
+    except ValueError:
+        return True  # 解析异常按教学值放行, 数据侧另行人工
+    if len(p) != 4 or any(x > 255 for x in p):
+        return True
+    if len(set(p)) == 1:
+        return True  # 四段全同(如 99.199.99.199/1.1.1.1)是教学假 IP, 非真实 IOC
+    if p[0] in (127, 0) or p == [255, 255, 255, 255]:
+        return True
+    if p[0] == 169 and p[1] == 254:
+        return True
+    if (p[0], p[1]) in ((192, 2), (198, 51), (203, 11)):
+        return True
+    if p[0] == 100 and 64 <= p[1] <= 127:
+        return True
+    if p[0] == 10:
+        return True
+    if p[0] == 172 and 16 <= p[1] <= 31:
+        return True
+    if ip in ("1.1.1.1", "114.114.114.114", "1.2.3.4", "9.9.9.9",
+              "99.199.99.199", "123.123.123.123") or p[0] == 8 and p[1] == 8:
+        return True  # 99.199.99.199 等 abab 交替值为 nginx/CDN 教程经典占位 IP
+    return False
+
 # 非技术内容关键词(§6.1/§9.3: 营销/广告占比 ≤ 0.5%)
-# 强信号: 单命中即报(§4.1.7 关注引导/版权声明等公众号残留)
-AD_STRONG_KEYWORDS = ("扫码关注", "关注公众号", "加微信", "客服热线", "立即咨询", "报名通道")
-# 弱信号: 命中 ≥2 才报
-AD_KEYWORDS = ("招募", "报名", "扫码", "渠道伙伴", "招商", "招聘", "客服热线", "立即咨询",
-               "版权声明", "原文首发", "转载声明", "会员招募", "训练营", "限时优惠", "优惠券")
+# 强信号: 单命中即报(§4.1.7 关注引导/公众号引流残留; 本身即广告句)
+AD_STRONG_KEYWORDS = ("扫码关注", "关注公众号", "加微信", "立即咨询", "报名通道")
+# 弱信号: 单行命中, 且该行含广告语境(CTA)才报;
+# 无 CTA 时属正文正常用词(安全案例里的"优惠券/招聘/客服热线"、目标系统名"招商网"、
+# 代码目录输出"/zs 招商程序"等), 报 ERROR/WARN 均为误判。
+AD_KEYWORDS = ("招募", "报名", "扫码", "渠道伙伴", "招商", "招聘", "客服热线",
+               "会员招募", "训练营", "限时优惠", "优惠券", "原文首发")
+# 广告语境(CTA): 命中行须含其一才算广告残留
+RE_AD_CTA = re.compile(r"欢迎|请|关注|扫码|联系我们|简历|加入.{0,4}群|更多|回复|点击.{0,10}(试用|咨询)|免费试用|扫一扫|二维码")
+# 正文描述标记: 命中行同时含其一 → 是正文(CTF 步骤/漏洞复现示例), 不是广告
+# 如 "提示让关注公众号…输入'青龙之站'之后如下图所示" / "优惠券可多次使用"
+RE_BODY_DESC = re.compile(r"如下图|如图|所示|步骤|输入|弹窗|界面|页面|提示|然后|之后|接着|点击.{0,8}(按钮|链接|图标)|流程|操作|功能|使用|多次|可.{0,4}使用")
+# 注: "转载声明/版权声明" 不在此列 —— §4.1.8 要求转载文注明出处, 声明行是合规保留项
 
 # §8 禁止内容关键词粗筛(涉黄/赌博/毒品/违禁交易/犯罪教唆类)
 FORBIDDEN_KW = ("挖矿木马", "病毒样本下载", "社工库", "银行卡四件套", "赌博网站搭建",
@@ -103,7 +151,31 @@ FORBIDDEN_KW = ("挖矿木马", "病毒样本下载", "社工库", "银行卡四
 
 # 近似重复(§6.2: 同源转载/复制粘贴副本; 对齐 text_dup_precise_qc.py 口径 Jaccard≥0.6)
 NEAR_DUP_JACCARD = 0.6
-RE_B64_STRIP = re.compile(r'data:image/[^;]*;base64,[A-Za-z0-9+/=\r\n]+')
+# base64 图片串(不吞行尾换行, 避免把紧跟其后的下一行并掉导致围栏/行结构错位)
+RE_B64_STRIP = re.compile(r'data:image/[^;]*;base64,[A-Za-z0-9+/=]+')
+# 代码块剔除(渲染后为纯文本, 其中 URL/图片引用不可点击, E7/E9 检查需剔除)
+# 注意: 不能用 ```.*?(?:```|$) 这类跨块正则 —— 奇数围栏时会把两个独立代码块之间
+# 的全部正文吞成"代码块", 导致检查漏检; 必须按行做围栏状态机只剥真正的块内行。
+
+
+def strip_code_blocks(text):
+    """剥掉代码块(围栏行之间)的内容, 保留块外正文。
+    与 E11 同口径: 开块>=3 反引号(允许缩进+info), 闭合需>=开块数且无 info。
+    末尾未闭合的开块 → 其后按块内处理(与状态机 open_n!=0 判定一致)。"""
+    out = []
+    n = 0
+    for ln in text.split("\n"):
+        m = RE_FENCE_LINE.match(ln)
+        if m:
+            k, info = len(m.group(1)), m.group(2).strip()
+            if n == 0:
+                n = k
+            elif k >= n and not info:
+                n = 0
+            continue
+        if n == 0:
+            out.append(ln)
+    return "\n".join(out)
 
 def content_shingles(content, n=5):
     """字符级 5-gram 集合(剔除 base64 图片后规范化), 用于近似重复检测。"""
@@ -121,25 +193,25 @@ log = logging.getLogger("blog_qc")
 
 
 def read_jsonl(path):
-    """读取 JSONL: 返回 (记录列表, [解析错误行号]); 校验 UTF-8 无 BOM。"""
-    records, errors = [], []
+    """流式读取 JSONL(生成器, 大文件不占内存): yield (记录, [解析错误行号], BOM标志)。
+    用法: for rec, errors, bom in read_jsonl(path): ..."""
     with open(path, "rb") as f:
-        raw = f.read()
-    bom = raw.startswith(b"\xef\xbb\xbf")
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise SystemExit(f"[FATAL] {path} 非 UTF-8 编码: {e}")
+        head = f.read(3)
+    bom = head == b"\xef\xbb\xbf"
     if bom:
         log.warning("%s 含 UTF-8 BOM(规范要求无 BOM)", path)
-    for idx, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError as e:
-            errors.append((idx, str(e)))
-    return records, errors, bom
+    errors = []
+    with open(path, "r", encoding="utf-8", errors="strict") as f:
+        for idx, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line), errors, bom
+            except UnicodeDecodeError as e:
+                raise SystemExit(f"[FATAL] {path} 非 UTF-8 编码: {e}")
+            except json.JSONDecodeError as e:
+                errors.append((idx, str(e)))
 
 
 def md5(s):
@@ -150,7 +222,8 @@ def md5(s):
 # 检查逻辑
 # ----------------------------------------------------------------------------
 class BlogQC:
-    def __init__(self):
+    def __init__(self, collect_shingles=True):
+        self.collect_shingles = collect_shingles
         self.error_rows = []   # (文件, id, 检查项, 详情)
         self.warn_rows = []
         self.stats = {"total": 0, "files": 0, "parse_fail": 0, "bom_files": 0,
@@ -183,6 +256,13 @@ class BlogQC:
                      f"顶层字段异常: {sorted(top)}(应为 id/content/meta)")
         content = rec.get("content") or ""
         meta = rec.get("meta") or {}
+        # 性能: 先一次性剥掉 base64 图数据(单条可达数 MB), 后续检查全在纯文本上跑
+        # 同时避免 base64 长串被隐私/IOC/关键词正则反复扫描
+        work, n_b64 = RE_B64_STRIP.subn("", content)
+        st["base64_imgs"] += n_b64
+        # 代码块/行内代码中的 URL/图片引用渲染后为纯文本不可点击, 外链/IOC 检查在 no_code 上跑
+        # (行内代码 span 同样剥离: XSS 教学示例 payload 里的 <img src=...> 不是真图床引用)
+        no_code = re.sub(r"`[^`\n]*`", "", strip_code_blocks(work))
 
         # E2 必填 meta 字段
         missing = [k for k in REQUIRED_META_FIELDS if meta.get(k) in (None, "")]
@@ -209,7 +289,7 @@ class BlogQC:
             self._seen_md5[body_md5] = rid
 
         # E5 PoC 截断(0828 验收 1a)
-        tail = content.rstrip()
+        tail = work.rstrip()
         if RE_POC_TRUNC.search(tail):
             st["trunc"] += 1
             self.add("ERROR", fpath, rid, "PoC截断",
@@ -218,27 +298,30 @@ class BlogQC:
             self.add("WARN", fpath, rid, "疑似截断",
                      f"正文以冒号结尾: {tail[-25:]!r}, 需人工复核")
         else:
-            # 空小节截断: 末尾标题(含代码/POC等关键词)后仅剩 <80 字符占位内容
+            # 空小节截断: 末尾标题后【完全无内容】才是采集截断。
+            # 注: 仅"短内容"不报 —— 安全博客惯用截图/flag/代码收尾,
+            # "## 验证\n\n![]()" / "## flag\nflag{...}" 属正常结尾, 报 ERROR 属误判。
             heads = list(RE_SECTION_HEAD.finditer(tail))
             if heads:
                 last = heads[-1]
                 after = tail[last.end():].strip()
                 head_text = last.group(0)
-                if len(after) < 80 and any(k in head_text for k in EMPTY_SECTION_KEYWORDS):
+                # 以完整句结尾的标题(修复建议/要点, 如"## 5.3 ……验证码。")本身即内容, 非截断
+                if not after and not re.search(r"[。！？!?]\s*$", head_text) and any(k in head_text for k in EMPTY_SECTION_KEYWORDS):
                     st["trunc"] += 1
                     self.add("ERROR", fpath, rid, "小节截断",
-                             f"末尾标题 {head_text[:40]!r} 后无实质内容({after[:30]!r}), 疑似采集截断(0828反馈)")
+                             f"末尾标题 {head_text[:40]!r} 后无任何内容, 疑似采集截断(0828反馈)")
 
         # E6 失效 blob 图片(0828 验收 1b)
-        blobs = RE_BLOB_IMG.findall(content)
+        blobs = RE_BLOB_IMG.findall(work)
         if blobs:
             st["blob"] += 1
             st["blob_imgs"] += len(blobs)
             self.add("ERROR", fpath, rid, "图片丢失(blob)",
                      f"{len(blobs)} 处 blob: 引用(如 {blobs[0][:50]}), 图片未抓到(0828反馈)")
 
-        # E7 未内嵌外链图片(0828 验收 1b)
-        exts = RE_EXT_IMG.findall(content) + RE_HTML_IMG.findall(content)
+        # E7 未内嵌外链图片(0828 验收 1b); 代码块内示例 URL(payload/CSP 教学)不算
+        exts = RE_EXT_IMG.findall(no_code) + RE_HTML_IMG.findall(no_code)
         if exts:
             st["ext"] += 1
             st["ext_imgs"] += len(exts)
@@ -247,43 +330,86 @@ class BlogQC:
 
         # E8 隐私明文(邮箱/身份证 ERROR; 手机号数字串误报率高, 降为 WARN 人工复核)
         priv = []
-        for m in RE_EMAIL.finditer(content):
+        today = datetime.date.today()
+        for m in RE_EMAIL.finditer(work):
             addr = m.group(0)
+            local = addr.split("@")[0]
+            # 排除: 全占位本地名(xxx 脱敏形式) / 纯标点本地名(HTML/代码提取残留)
+            placeholder = bool(re.fullmatch(r'[xX×*]{1,}', local))
+            punct_only = bool(re.fullmatch(r'[._+-]{1,3}', local))
+            # 排除: example.*/test.*/localhost 等教学/CTF 环境示例域名
             if (addr.split("@")[-1].lower() not in EMAIL_WHITELIST
-                    and addr != "x" and not RE_EMAIL_ANON.match(addr)):
+                    and addr != "x" and not RE_EMAIL_ANON.match(addr)
+                    and not RE_EMAIL_EXAMPLE.search(addr)
+                    and not placeholder and not punct_only):
                 priv.append(f"邮箱 {addr}")
-        cards = RE_IDCARD.findall(content)
-        if cards:
-            priv.append(f"身份证 {cards[0]}")
+        # CTF 提交流花括号区段(flag{...} 等), 其内的"身份证"视为 CTF 数据
+        flag_spans = [(fm.start(), fm.end()) for fm in RE_ID_IN_FLAG.finditer(work)]
+        for cm in RE_IDCARD.finditer(work):
+            card = cm.group(0)
+            # 出生年份合理性(>1900 且 <= 今年); CTF flag/假数据(如 2084)不算真实身份证
+            try:
+                by = int(card[6:10])
+                if not (1900 <= by <= today.year):
+                    continue
+            except ValueError:
+                pass
+            if any(s <= cm.start() < e for s, e in flag_spans):
+                continue
+            priv.append(f"身份证 {card}")
         if priv:
             st["privacy"] += 1
             self.add("ERROR", fpath, rid, "隐私泄露", "; ".join(priv[:3]))
-        phones = RE_PHONE.findall(content)
+        phones = RE_PHONE.findall(work)
         if phones:
             self.add("WARN", fpath, rid, "疑似手机号",
                      f"正文含疑似手机号 {phones[0]} 等 {len(phones)} 处(示例号/数字串也可能命中, 需复核)")
 
-        # E9 未去武器化 IP 链接
-        for m in RE_UNDEFANGED_IP_URL.finditer(content):
+        # E9 未去武器化 IP 链接(仅代码块外/行内代码外; 回环/教学保留段/私网段非公网 IOC, 排除)
+        # 列出全部命中处(旧版只报第一处就 break, 处数被低估, 与整改脚本对不上)
+        undefanged = []
+        for m in RE_UNDEFANGED_IP_URL.finditer(no_code):
             frag = m.group(0)
-            if not RE_DEFANG_MARK.search(frag) and frag.lower().startswith(("http",)):
-                self.add("WARN", fpath, rid, "IOC未Defang", f"可点击 IP 链接未去武器化: {frag}")
-                break
+            if RE_DEFANG_MARK.search(frag) or not frag.lower().startswith(("http",)):
+                continue
+            ip = re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', frag)
+            if ip and _is_excluded_ip(ip.group(0)):
+                continue
+            undefanged.append(frag)
+        if undefanged:
+            self.add("WARN", fpath, rid, "IOC未Defang",
+                     f"可点击 IP 链接未去武器化 {len(undefanged)} 处: {undefanged[0]}"
+                     + (f" 等" if len(undefanged) > 1 else ""))
 
         # E10 内网 IP 漏脱敏(§9.6: 私网段须替换为 RFC 测试值, 10.x 为合规值)
-        priv_ips = RE_PRIV_IP.findall(content)
+        priv_ips = RE_PRIV_IP.findall(work)
         if priv_ips:
             self.add("ERROR", fpath, rid, "内网IP未脱敏",
                      f"正文含私网地址 {priv_ips[0]} 等 {len(priv_ips)} 处(应替换为 RFC 测试值)")
 
         # E11 代码块未闭合(§6.1: 过滤代码块损坏/排版严重错乱文章)
-        n_fence = len(RE_CODE_FENCE.findall(content))
-        if n_fence % 2 == 1:
+        # 标准 Markdown 围栏配对状态机: 开块反引号数>=3, 闭合需>=开块数且无 info
+        # (可识别缩进围栏 / 4反引号嵌套3反引号代码, 奇偶计数会误报)
+        open_n = 0
+        open_line = 0
+        n_fence = 0
+        for i, ln in enumerate(work.split("\n"), 1):
+            m = RE_FENCE_LINE.match(ln)
+            if not m:
+                continue
+            k, info = len(m.group(1)), m.group(2).strip()
+            n_fence += 1
+            if open_n == 0:
+                open_n, open_line = k, i
+            elif k >= open_n and not info:
+                open_n, open_line = 0, 0
+        if open_n != 0:
             self.add("ERROR", fpath, rid, "代码块未闭合",
-                     f"``` 围栏 {n_fence} 个(奇数), 代码块损坏或采集残缺(§6.1)")
+                     f"``` 围栏未配平(第{open_line}行开块未闭合, 共{n_fence}个围栏), "
+                     f"代码块损坏或采集残缺(§6.1)")
 
         # W3 涉漏洞文章 CVE 标注(§4.1.6: 须标注 CVE 编号及影响版本)
-        cves_in_body = set(m.group(0).upper() for m in RE_CVE_MENTION.finditer(content))
+        cves_in_body = set(m.group(0).upper() for m in RE_CVE_MENTION.finditer(work))
         related = meta.get("related_cves")
         if isinstance(related, str):
             related = [related]
@@ -315,34 +441,62 @@ class BlogQC:
             except ValueError:
                 pass
 
-        # W1 正文过短
-        if len(content.strip()) < MIN_CONTENT_CHARS:
-            self.add("WARN", fpath, rid, "正文过短", f"仅 {len(content.strip())} 字符")
+        # W1 正文过短(按纯文本计, 图片不计字数)
+        # 图文内容(有内嵌图/占位图)纯文本短属合理: 截图型渗透/软件介绍, 图即正文
+        img_cnt = n_b64 + len(RE_IMAGE_DESC.findall(work))
+        if len(work.strip()) < MIN_CONTENT_CHARS and img_cnt == 0:
+            self.add("WARN", fpath, rid, "正文过短", f"仅 {len(work.strip())} 字符(不含图片)")
 
-        # W2 非技术内容(§6.1/§9.3: 强关键词单命中 / 弱关键词命中≥2)
-        strong_hits = [k for k in AD_STRONG_KEYWORDS if k in content]
-        hit_kw = [k for k in AD_KEYWORDS if k in content]
+        # W2 非技术内容(§6.1/§9.3: 正文残留营销/引流广告)
+        # 判定口径(避免正文用词误报):
+        #  - 分类本身即社区公告/招聘 → 正文主题, 豁免
+        #  - 逐行扫描: 强信号行 或 弱信号行(须含广告语境 CTA),
+        #    且该行不含正文描述标记(CTF 步骤/复现示例/产品 UI 描述)
+        strong_hits = []
+        hit_kw = []
+        cat = str(meta.get("content_category") or "")
+        cat_exempt = any(t in cat for t in ("公告", "招聘"))
+        if not cat_exempt:
+            for ln in work.split("\n"):
+                if RE_BODY_DESC.search(ln):
+                    continue
+                # CTF 交旗玩法(如"关注公众号...获取你的flag")不是广告
+                if re.search(r"flag|ctf", ln, re.I):
+                    continue
+                # "公众号的X"名词短语(如"关注公众号的微信号")是功能描述, 非引流 CTA
+                if "关注公众号的" in ln:
+                    continue
+                for k in AD_STRONG_KEYWORDS:
+                    if k in ln and k not in strong_hits:
+                        strong_hits.append(k)
+                for k in AD_KEYWORDS:
+                    if k in ln and RE_AD_CTA.search(ln) and k not in hit_kw:
+                        hit_kw.append(k)
         if strong_hits or len(hit_kw) >= 2:
             st["nontech"] += 1
             self.add("WARN", fpath, rid, "疑似非技术内容",
                      f"命中: {strong_hits + hit_kw}(§4.1.7 应去除关注引导/广告推广残留)")
 
         # E12 禁止内容粗筛(§8: 涉黄/赌博/毒品/违禁交易/犯罪教唆)
-        fb_hits = [k for k in FORBIDDEN_KW if k in content]
+        fb_hits = [k for k in FORBIDDEN_KW if k in work]
         if fb_hits:
             st["forbidden"] += 1
             self.add("ERROR", fpath, rid, "疑似违规内容",
                      f"命中禁止内容关键词: {fb_hits}(§8 双重拦截, 应剔除)")
 
-        # 近似重复 shingle 收集(§6.2, check_global 统一判定)
-        self._shingles.append((rid, content_shingles(content)))
+        # 近似重复 shingle 收集(§6.2, check_global 统一判定); 大文件可关闭防内存膨胀
+        if self.collect_shingles:
+            self._shingles.append((rid, content_shingles(work)))
 
         # 统计
         st["platform"][meta.get("source_platform", "?")] = st["platform"].get(meta.get("source_platform", "?"), 0) + 1
         st["category"][meta.get("content_category", "?")] = st["category"].get(meta.get("content_category", "?"), 0) + 1
         st["tokens_est"] += len(content)  # 字符数近似, 供参考
-        # §5.1 primary_languages 分布(条件字段, 有值时统计)
-        for lang in (meta.get("primary_languages") or []):
+        # §5.1 primary_languages 分布(条件字段, 有值时统计; 兼容 str/list 两种历史形态)
+        langs = meta.get("primary_languages") or []
+        if isinstance(langs, str):
+            langs = [langs]
+        for lang in langs:
             lk = str(lang)
             st["lang"][lk] = st["lang"].get(lk, 0) + 1
         # §9.7 权威源覆盖率
@@ -350,12 +504,12 @@ class BlogQC:
         if plat and any(src in plat for src in AUTHORITATIVE_SOURCES):
             st["authority"] += 1
         # 报告维度计数: 完整性 / 格式规范 / 安全知识覆盖度
-        st["base64_imgs"] += len(re.findall(r'!\[[^\]]*\]\(data:image/', content))
-        if not content.strip():
+        # (base64_imgs 已在开头用 RE_B64_STRIP.subn 一次统计)
+        if not work.strip():
             st["content_missing"] += 1
-        if len(content.strip()) < MIN_CONTENT_CHARS:
+        if len(work.strip()) < MIN_CONTENT_CHARS:
             st["content_short"] += 1
-        if len(RE_CODE_FENCE.findall(content)) % 2 == 1:
+        if open_n != 0:
             st["fence_bad"] += 1
         if meta.get("is_original") is True:
             st["original"] += 1
@@ -447,10 +601,16 @@ class BlogQC:
         # 近似重复(§6.2: 同源转载/复制粘贴; 字符 5-gram Jaccard ≥0.6)
         nd_groups = self._detect_near_dup()
         st["near_dup"] = len(nd_groups)
-        row("WARN" if nd_groups else "PASS",
-            f"近似重复组 {len(nd_groups)} 组",
-            f"字符级 5-gram Jaccard≥{NEAR_DUP_JACCARD}(§6.2 同源内容优先保留首发完整版)" if nd_groups
-            else f"字符级 5-gram Jaccard≥{NEAR_DUP_JACCARD} 检出 0 组")
+        if not self.collect_shingles:
+            row("WARN", "近似重复组 未检测",
+                "大文件运行已跳过 5-gram shingle 收集(内存保护), 请用 text_dup_precise_qc.py 或抽样 --sample 复跑")
+        elif nd_groups:
+            row("WARN",
+                f"近似重复组 {len(nd_groups)} 组",
+                f"字符级 5-gram Jaccard≥{NEAR_DUP_JACCARD}(§6.2 同源内容优先保留首发完整版)")
+        else:
+            row("PASS", "近似重复组 0 组",
+                f"字符级 5-gram Jaccard≥{NEAR_DUP_JACCARD} 检出 0 组")
         # 编程语言分布(§5.1: 单一语言 ≤30%, 条件字段有值时)
         if st["lang"]:
             top_lang, top_cnt = max(st["lang"].items(), key=lambda x: x[1])
@@ -717,6 +877,8 @@ def main():
     ap.add_argument("--out", default=None, help="报告输出目录, 默认 ./qc_reports/")
     ap.add_argument("--sample", type=float, default=0, metavar="PCT",
                     help="随机抽样百分比(如 1 = 抽 1%%, 规范书 §9 质检抽检要求 ≥1%%); 0=全量。固定 seed 可复现")
+    ap.add_argument("--no-shingles", action="store_true",
+                    help="跳过 5-gram 近似重复收集(大文件防内存; >5000 条本就会跳过判定)")
     args = ap.parse_args()
 
     base = os.path.dirname(os.path.abspath(__file__))
@@ -736,30 +898,53 @@ def main():
         ap.error(f"未找到 jsonl 文件: {args.paths}")
 
     started_at = datetime.datetime.now()
-    qc = BlogQC()
+    collect_shingles = not args.no_shingles
+    if not collect_shingles:
+        log.info("已跳过 5-gram 近似重复收集(--no-shingles)")
+    qc = BlogQC(collect_shingles=collect_shingles)
     files_meta = []
     import random
     rng = random.Random(2026)  # 固定 seed, 抽检结果可复现
     sampled_total = 0
     for fpath in files:
-        records, errors, bom = read_jsonl(fpath)
-        if args.sample > 0 and len(records) > 1:
-            full_n = len(records)
-            k = max(1, int(round(full_n * args.sample / 100)))
-            records = rng.sample(records, k)
-            sampled_total += k
-            log.info("抽样 %s: 全量 %d 条 → 抽检 %d 条(%.1f%%)", fpath, full_n, k, args.sample)
-        files_meta.append((fpath, len(records)))
+        files_meta.append((fpath, 0))
         qc.stats["files"] += 1
-        log.info("读取 %s: %d 条, 解析失败 %d 行", fpath, len(records), len(errors))
-        for lineno, err in errors:
-            qc.add("ERROR", fpath, f"line:{lineno}", "JSON解析失败", err)
-        qc.stats["parse_fail"] += len(errors)
-        if bom:
-            qc.stats["bom_files"] += 1
-            qc.add("ERROR", fpath, "-", "BOM", "文件含 UTF-8 BOM(规范要求无 BOM)")
-        for rec in records:
-            qc.check_record(fpath, rec)
+        t_file = time.time()
+        if args.sample > 0:
+            records, errors, bom = [], [], False
+            for rec, errors, bom in read_jsonl(fpath):
+                records.append(rec)
+            full_n = len(records)
+            k = max(1, int(round(full_n * args.sample / 100))) if full_n > 1 else full_n
+            records = rng.sample(records, k) if k < full_n else records
+            sampled_total += len(records)
+            log.info("抽样 %s: 全量 %d 条 → 抽检 %d 条(%.1f%%)", fpath, full_n, len(records), args.sample)
+            for lineno, err in errors:
+                qc.add("ERROR", fpath, f"line:{lineno}", "JSON解析失败", err)
+            qc.stats["parse_fail"] += len(errors)
+            if bom:
+                qc.stats["bom_files"] += 1
+                qc.add("ERROR", fpath, "-", "BOM", "文件含 UTF-8 BOM(规范要求无 BOM)")
+            for rec in records:
+                qc.check_record(fpath, rec)
+            files_meta[-1] = (fpath, len(records))
+        else:
+            n = 0
+            last_log = 0
+            for rec, errors, bom in read_jsonl(fpath):
+                n += 1
+                qc.check_record(fpath, rec)
+                if n - last_log >= 1000:
+                    last_log = n
+                    log.info("  %s 已检 %d 条 (%.0fs)", os.path.basename(fpath), n, time.time() - t_file)
+            files_meta[-1] = (fpath, n)
+            log.info("读取 %s: %d 条, 解析失败 %d 行 (%.0fs)", fpath, n, len(errors), time.time() - t_file)
+            for lineno, err in errors:
+                qc.add("ERROR", fpath, f"line:{lineno}", "JSON解析失败", err)
+            qc.stats["parse_fail"] += len(errors)
+            if bom:
+                qc.stats["bom_files"] += 1
+                qc.add("ERROR", fpath, "-", "BOM", "文件含 UTF-8 BOM(规范要求无 BOM)")
 
     md_path, html_path = write_reports(out_dir, qc, files_meta, started_at,
                                        sample_pct=args.sample, sampled_n=sampled_total)
