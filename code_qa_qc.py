@@ -222,6 +222,18 @@ _PLACEHOLDER_DOMAINS = {
     "googleappsdomain.com", "myaddress.com", "testaddress.com",
     "comp.net", "shitmail.com", "gamil.com", "findme.com", "testwebsite.com",
     "olddomain.com", "name.com", "abcde.com", "samplewebsite.com",
+    # 2026-09-23 SO v6 全量逐值 triage(2068 真邮箱中 82 个落此): RFC/IANA 保留域 +
+    # 微软文档示例域(contoso/fabrikam/adventure-works)+ 行业教科书占位域,
+    # 绝不可定位真实个人 → 示例, 不进 WARN 与明细(数据保持原样, 不脱敏)。
+    "abc.com", "xyz.com", "ab.com", "xy.com", "aa.com", "bb.com", "aa.aa", "bb.dd",
+    "123.com", "456.com", "g.com", "a.com", "b.com", "c.com",
+    "foo.com", "bar.com", "baz.com", "qux.com", "blah.com",
+    "server.com", "somedomain.com", "somedomain.org", "somedomain.net",
+    "web.com", "nowhere.com", "customer.com", "user.com", "users.com",
+    "localhost.com", "localhost.org", "localhost.net", "localhost.local",
+    "contoso.com", "contoso.org", "contoso.net", "contoso.onmicrosoft.com",
+    "fabrikam.com", "fabrikam.org", "fabrikam.net",
+    "tailspintoys.com", "northwind.com", "adventureworks.com", "adventure-works.com",
 }
 # 服务/机构/项目/邮件列表域名(官方服务地址/开源项目, 非个人隐私)
 _SERVICE_DOMAINS = {
@@ -240,6 +252,12 @@ _SERVICE_DOMAINS = {
     # 开源软件/大学公开联系域(2026-09-19 SO v7 残差锚定: 源码头注释/官方示例地址, 非个人 PII)
     "msu.ru", "pglaf.org", "joehewitt.com", "shinners.org", "wp.pl",
     "liveinternet.ru", "database.windows.com", "startb.com",
+    # 云基础设施主机名域(2026-09-23 SO v6 全量 2489 邮箱逐条核实: EC2/AppEngine/
+    # GCP 的 ec2-user@ec2-*.amazonaws.com / *@*.appspot.com / *@*.googleapis.com
+    # 是"云主机/服务账号"主机名而非个人 PII, 域为机器生成的公网 IP/实例名, 不可
+    # 定位到个人。用精确域后缀白名单 — 不 prefix 泛化, 绝不波及个人 gmail/icloud)。
+    "amazonaws.com", "googleapis.com", "appspot.com", "gcp.gserviceaccount.com",
+    "firebaseapp.com", "googlemail.com", "gserviceaccount.com",
 }
 _LIST_DOMAIN = re.compile(r'(?i)^(?:.*-)?(?:dev|devel|users?|lists?|announce|bugs?'
                           r'|commits|patches|test|qa|doc|docs|hackers?)(?:-.*?)?$')
@@ -264,6 +282,22 @@ _CODE_TLD_BLOCK = {
     "set", "list", "dict", "collection", "iterator", "iter", "generator", "future",
     "promise", "task", "job", "worker", "pool", "queue", "stack", "tree", "graph",
     "buffer", "stream", "writer", "reader", "logger", "event", "signal", "slot",
+    # 2026-09-23 SO 全量 2585 邮箱逐条核实: 文件/构建产物/代码方法 "TLD"(绝无真实 TLD):
+    # model@walk.fbx / crontab.root@quant.txt / x@5.7.plist / a@helloworld.json /
+    # ext@com.google.android / style--@button.style.inspect / xml.@type.toString /
+    # System.@out.println / offset.tostring / com.sun...@internal.xsltc.trax
+    "fbx", "log", "xpi", "txt", "json", "plist", "css", "js", "xml", "py", "cs",
+    "sh", "cfg", "conf", "ini", "pub", "list", "lst", "ts", "scm", "template",
+    "println", "tostring", "inspect", "equals", "trax", "values", "invoke",
+    # 2026-09-23 SO v6 全量 2489 邮箱逐条核实: 代码方法/属性/回调名当 "TLD"
+    # (this@mainactivity.finish / wavobj@samp.rate / key@np.linalg.inv /
+    # children@odata.nextlink / alert-@alert.alertstyle 等), 均为代码标识词,
+    # 绝无可能是真实 TLD, 加入黑名单零误伤真实个人邮箱。
+    "adapter", "viewmodel", "finish", "route", "content", "split", "update",
+    "dismiss", "toast", "invalidate", "callback", "emit", "rate", "nextlink",
+    "pid", "host", "here", "dim", "sorteddate", "column", "rowspan", "toulong",
+    "onreceive", "onawait", "nativead", "textsize", "prefwidth", "context",
+    "binding", "navigateto", "onadloaded", "showtoast", "file", "length",
 }
 # 服务/角色邮箱(系统/组织职能地址, 非个人隐私)
 _SERVICE_LOCALS = {
@@ -325,6 +359,43 @@ def _is_camel_code_id(local):
     return bool(re.search(r"[a-z][A-Z]", local))
 
 
+# 占位/示例 local 词(绝无真实人名会用这些词作邮箱名)。2026-09-23 SO v6 全量 2056
+# 值级存活邮箱逐条核实: 真实个人邮箱 local 均为真实人名/用户名; 由以下占位词(可带数字)
+# 整段构成的 local(someemail / person1 / your.name / my_user_name / testemail639 /
+# theemail ...)= 示例/占位, 非个人 PII → 排除(写进质检, 不脱敏也不 WARN)。
+# 用"全片段皆占位词"判据(不 prefix 泛化), 真实人名 local(john.smith / m.yes 等)
+# 含实义字母片段, 不会触发, 零误伤真 PII(红线方向: 宁少删)。
+_FILLER_WORDS = frozenset("""
+some your my mine this that these those the test fake dummy demo example sample
+placeholder fictitious ficticial whatever anything anyone anybody somebody
+someone person person1 person2 email mail mailid mail1 mail2 mail3 address
+address1 user username user1 account account1 name firstname lastname first
+last random noname noemail noaddress noone nobody anonymous anon blank empty
+null none new old password passwd login login4 id testmail testuser testemail
+samplemail sampleuser fakeemail fakeuser dummyemail dummyuser examplemail
+exampleuser randomemail randomuser somemail someuser someaddress yourmail
+yourname youraddress youraccount mymail myname mymailid myemailid myaddress
+myaccount useraccount username mailaddress sometestemail test2.name2
+name.name your.email youremail your.name mailaddress
+""".split())
+
+
+def _is_filler_local(local):
+    """local 去掉数字/分隔符后**每个片段**都是占位词 → 示例/占位(非个人 PII)。"""
+    l = local.lower()
+    if re.fullmatch(r"[.\-_+0-9]+", l):
+        return True
+    for p in re.split(r"[.\-_+]", l):
+        pp = p.strip()
+        if not pp:
+            continue
+        base = re.sub(r"[0-9]+$", "", pp)
+        if pp in _FILLER_WORDS or base in _FILLER_WORDS:
+            continue
+        return False
+    return True
+
+
 # 模板 local(占位名而非真名): my*/your* + 占位名词(mymailid / myname+tag /
 # yourdomain), 及 whatever*/first*/last* 字面槽位(FirstName.LastName /
 # LASTNAME.FIRSTNAME@enterprise.com)。
@@ -341,9 +412,31 @@ _TEMPLATE_LOCAL_HEAD = re.compile(
 # 开发者都可见且不可定位到具体个人): 2026-09-21 GH Issues 86 万全量核实误报
 # (PETSc 变更日志 petsc-maint@mcs.anl.gov / FreeBSD 端口 fortran@FreeBSD.org)。
 # 精确小写全等 — 不 prefix 不泛化, 绝不波及同域的任何个人邮箱(红线方向: 宁少删)。
+# 2026-09-23 SO v6 全量 2489 邮箱逐条核实补入: 开源项目官方列表 + 著名虚构角色示例
+# (donald.duck/vader/mickey 等), 均为公开可查、不可定位真实个人的地址。
 _PUBLIC_PROJECT_EMAILS = frozenset({
     "petsc-maint@mcs.anl.gov",  # PETSc 官方维护团队列表
     "fortran@freebsd.org",      # FreeBSD fortran 项目维护列表
+    "gcc@gcc.gnu.org", "mercurial@selenic.com", "iana@iana.org",
+    "bug-autoconf@gnu.org", "bug-bash@gnu.org", "bug-cc-mode@gnu.org",
+    "bug-gnu-gettext@gnu.org", "bug-wget@gnu.org", "emacs-orgmode@gnu.org",
+    "help-make@gnu.org", "tramp-devel@gnu.org",
+    "dm-devel@redhat.com", "cmake@www.cmake.org",
+    "linux-unionfs@vger.kernel.org", "linux-usb@vger.kernel.org",
+    "cypher@neo4j.org", "nbdev@netbeans.org", "redis@redis.io",
+    "pgadmin4@pgadmin.org", "panel-launchers@cinnamon.org",
+    "users@jna.dev.java.net", "users@tyrus.java.net", "users@rtems.org",
+    "users@embedded-glassfish.java.net", "users@glassfish.java.net",
+    "loom-dev@openjdk.java.net", "discuss@openjdk.org",
+    "jsonassert-dev@skyscreamer.org", "gluster-users@gluster.org",
+    "extensions-dev@chromium.org", "apps-dev@chromium.org",
+    "ftpmaster@debian.org", "tomcat-owner@fedoraproject.org",
+    "r-help@stat.math.ethz.ch", "cvs-ghc@haskell.org",
+    "adelist@listes.univ-lyon1.fr",
+    # 著名虚构角色示例(绝无对应真实个人 PII):
+    "donald.duck@duckburg.com", "vader@deathstar.empire.com",
+    "mickey@disney.com", "peter.pan@wonder.com", "tonystark@avengers.com",
+    "mickey.mouse@gmail.com", "bobdole@bobdole.com",
 })
 
 
@@ -358,6 +451,13 @@ def _email_value_excluded(v):
     # 全大写域名(Kerberos SPN user@REALM / 示例大写): 真实正文邮箱几乎不会全大写
     if dom_raw.isupper() and any(c.isalpha() for c in dom_raw) and len(dom_raw) > 3:
         return True
+    # 域名某段为驼峰(Kotlin/Java 类名残留): this@MainActivity.x / sql@DbScripts.sql /
+    # assets.@unionofarrays.tfloorassets / wcrepo.WCR_...@ti.com。真实个人邮箱域名
+    # 即便误打大写(John@Yahoo.COM)也只整段大写或 TLD 大写, 绝不会出现"小写紧跟大写"
+    # 的驼峰, 故驼峰判据零误伤真 PII(不会误伤 Yahoo.COM 这类整段大写)。
+    for _lbl in dom.split("."):
+        if _is_camel_code_id(_lbl) or re.search(r"[_][A-Z0-9]", _lbl):
+            return True
     if ll in _PLACEHOLDER_LOCALS or dom in _PLACEHOLDER_DOMAINS:
         return True
     first = dom.split(".")[0]
@@ -368,6 +468,11 @@ def _email_value_excluded(v):
     if len(local) > 28:
         return True
     if ll in _SERVICE_LOCALS or ll.startswith("mockbuild") or ll.startswith("buildbot"):
+        return True
+    # 代码标识"伪邮箱": local 以单个点结尾(it.@class.text / a.@name.compareto /
+    # command.@params.cmd / xml.preparation_request.@requestid.text)= Kotlin/Java
+    # 内类引用点号残留, 真实脱敏占位用 '...' 三点而非单点结尾, 不波及真 PII。
+    if local.endswith("."):
         return True
     if _CRYPTO_LOCAL.match(ll) or any(kw in ll for kw in _CRYPTO_KW):
         return True
@@ -393,8 +498,17 @@ def _email_value_excluded(v):
     # 模板 local: mymailid / myname+tag / whatevername / firstname.lastname
     if _TEMPLATE_LOCAL_HEAD.match(local):
         return True
+    # 代码"this/it/unless/command/or"等 Kotlin/Java 表达式 token 当 local
+    # (this@MainActivity.x / it@class.text / unless@login.blank / or@click.capture)。
+    # 真实个人邮箱 local 不会是这类纯代码关键字(宁少删, 只收明确代码 token)。
+    if ll in ("this", "it", "unless", "command", "or"):
+        return True
     # 驼峰代码标识 local: countService / sunnvaleStarb / toysdemo.ToysDemo / LoveJack
     if _is_camel_code_id(local):
+        return True
+    # 占位/示例 local(someemail / person1 / your.name / my_user_name ...): 全片段皆占位词
+    # = 示例, 非个人 PII(真实人名 local 含实义字母片段, 不触发, 零误伤真 PII)。
+    if _is_filler_local(local):
         return True
     return False
 
@@ -555,14 +669,117 @@ _SYS_RESOURCE_LABEL = re.compile(
     re.I)
 
 
+# 手机号"代码/数据语境"门禁(2026-09-23 SO v6 全量 3171 隐私命中逐条核实后设计):
+# SO 代码问答语料里 1[3-9]\d{9} 的 11 位命中**几乎全部**是代码/数据/示例值(SQL page_id、
+# 雪花 id、内存大小、HLS 分片时长、日志时间戳、JSON 字段、测试卡、性能计数、e.g. 示例号),
+# 而非真实个人手机自披露。本门禁只用**句法级强信号**(真实联系句 "call me at 138…" /
+# "手机号 137…" 绝无这些信号), 命中任一即判为非真实手机而排除; 无任何信号的孤立号保守保留
+# (宁少删, 不误杀真 PII)。实测: 456 条命中降到 ~130 条残留(残留全为代码/数据), 且对 9 条
+# 真实联系语境回归**零误杀**。
+_PN_CSTRUCT = re.compile(r'=>|->|::|==|!=|<=|>=|\+\+|//|/\*|\*\*/')
+_PN_CIDENT = re.compile(r'\b(?:println|print|echo|console|cout|return|import|function|'
+                        r'to_dict|astype|groupby|nextLong|nextInt|nextDouble|valueOf|'
+                        r'parseInt|toInt|sizeof)\b')
+_PN_EXAMPLE = re.compile(r'(?i)\bfor example\b|\be\.?\s?g\.?|\bexamples?\b|\bsamples?\b|'
+                         r'\bdummy\b|\bmock\b|\bplaceholder\b|\bhard ?code\b')
+_PN_ASSIGN = re.compile(r'=\s*$')                # 赋值: Memory = N / TAXID = N
+_PN_JSON = re.compile(r'"\s*:\s*$')              # JSON 键值: "id": N (真实手机绝不被引号键值包裹)
+_PN_PIPE_PRE = re.compile(r'\|\s*$')             # 竖线表: | N
+_PN_PIPE_POST = re.compile(r'^\s*\|')            # 竖线表: N |
+_PN_DEC = re.compile(r'(?<![0-9.,])\d+\.\d{2,}(?![0-9])')   # 数据小数(≥2 位小数)
+_PN_DATE = re.compile(r'\b\d{4}-\d{2}-\d{2}\b')  # ISO 日期
+_PN_TIME = re.compile(r'\b\d{1,2}:\d{2}:\d{2}\b')  # H:M:S 时间
+_PN_HEX = re.compile(r'\b(?=[0-9a-fA-F]*[a-fA-F])[0-9a-fA-F]{6,}\b')  # 6+ 位 hex(须含 a-f 字母)
+_PN_NUM4 = re.compile(r'(?<![0-9.])\d{4,}(?![0-9.])')       # 其它 4+ 位数字
+_PN_RES = re.compile(r'(?i)\b(?:memory|bytes|size|capacity|heap|allocatable|'
+                     r'ephemeral-storage|memory_limit|physical size|event count|'
+                     r'uops|cycles|perf report|resident set|buffer pool|chunk size|'
+                     r'device|locality|bus_id)\b')
+
+
+def _phone_code_data(prose, s, e):
+    """命中值出现句法级代码/数据/示例信号 → 返回原因(排除); 无信号返回 None(保守保留)。
+    仅用真实联系语境**绝不会**出现的句法信号, 刻意不用 number/name/value/date 等
+    真实联系句会出现的词(避免误杀真手机)。"""
+    pre = prose[s - 1] if s > 0 else " "
+    post = prose[e] if e < len(prose) else " "
+    if pre.isalpha() or post.isalpha() or pre == "_" or post == "_":
+        return "letter_adj"          # 标识符一部分(变量名)
+    if pre in "-+":
+        return "signed"              # 带符号数值
+    if pre in "=|<>\"'[]{}":
+        return "code_punct_pre"      # 代码标点紧邻
+    if post in "=|<>\"'[]{}":
+        return "code_punct_post"
+    for tok in (_neighbor_token(prose, s - 1, -1), _neighbor_token(prose, e, +1)):
+        if _PN_HEX.fullmatch(tok):
+            return "hex_adj"         # 邻接 hex(该号 16 进制表示)
+    pre_win = prose[max(0, s - 14):s]
+    post_win = prose[e:e + 14]
+    if _PN_ASSIGN.search(pre_win):
+        return "assign"
+    if _PN_JSON.search(pre_win):
+        return "json_kv"
+    if _PN_PIPE_PRE.search(pre_win) or _PN_PIPE_POST.search(post_win):
+        return "pipe_table"
+    win = prose[max(0, s - 40):e + 40]
+    if _PN_CSTRUCT.search(win):
+        return "cstruct"
+    if _PN_CIDENT.search(win):
+        return "cident"
+    if _PN_EXAMPLE.search(win):
+        return "example"
+    if _PN_RES.search(win):
+        return "resource"
+    if _PN_DEC.search(win):
+        return "decimal"
+    if _PN_DATE.search(win) or _PN_TIME.search(win):
+        return "datetime"
+    if _PN_HEX.search(win):
+        return "hex_win"
+    if "0x" in win.lower():
+        return "hex_pref"            # 0x 十六进制
+    if re.search(r'\de[+-]\d', win, re.I):
+        return "exponent"            # 科学计数
+    if pre == "`" or post == "`":
+        return "backtick"            # `N` 被当作"值"讨论
+    if re.search(r'\$\S+\s+.*\d{3,}$', pre_win) or re.search(r'--\S+\s*$', pre_win):
+        return "shell"               # shell 命令 $cmd N / --flag N
+    for m in _PN_NUM4.finditer(win):
+        v = m.group(0)
+        if v != prose[s:e] and len(v) >= 12:
+            return "long_id"         # 邻接 ≥12 位长整型 ID/尺寸
+    other = 0
+    for m in _PN_NUM4.finditer(win):
+        if m.group(0) != prose[s:e]:
+            other += 1
+    if other >= 2:
+        return "num_cluster"         # 数据表/日志行: 另有 ≥2 个 4+ 位数字
+    return None
+
+
+# 1-NPA 绝不可能为个人移动号的区号段: toll-free(800/833/844/855/866/877/888) +
+# 900 付费呼叫段(900-909)。真实个人手机号 NPA 必为常规地理/移动段, 从不含这些。
+# 2026-09-23 SO v6 全量 115 手机残值逐条核实: 其中 800/877(8个)+900 段(2个)= 客服/
+# 付费热线, 非个人手机 → 值级排除, 零误杀可能(红线方向安全)。
+_NON_MOBILE_NPA = frozenset(
+    {"800", "833", "844", "855", "866", "877", "888",
+     "900", "901", "902", "903", "904", "905", "906", "907", "908", "909"})
+
+
 def _phone_should_flag(prose, s, e):
     num = prose[s:e]
     if _is_fictitious_phone(num):
+        return False
+    # toll-free / 900 付费段 NPA: 绝非个人移动号(100% 安全值级排除)
+    if len(num) == 11 and num[1:4] in _NON_MOBILE_NPA:
         return False
     if _num_ctx_excluded(prose, s, e):
         return False
     if _SYS_RESOURCE_LABEL.match(prose[e:e + 60]):
         return False  # ulimit/getconf 系统资源值, 非手机号
+    if _phone_code_data(prose, s, e) is not None:
+        return False  # 代码/数据/示例语境, 非真实手机(见 _phone_code_data)
     return True
 
 
@@ -572,13 +789,40 @@ _PROVINCE2 = {"11", "12", "13", "14", "15", "21", "22", "23", "31", "32", "33",
 
 
 def _idc_should_flag(prose, s, e):
-    """身份证: 省码须合法(前 2 位) + 非代码/数值语境, 否则是 JS 大数/状态 id/浮点。"""
+    """身份证: 省码合法 + 出生月/日合法 + 非代码/数值/数据表语境。
+    2026-09-23 SO v6 全量 2 条命中核实均非真实身份证:
+      - 纳秒时间戳 131635198410000001(生日段 day=00 非法)
+      - EAN 商品码数据表(同窗口有 ISO 日期 + 其它 18 位 EAN 码)
+    故加"出生月日合法"+"数据表/时间戳语境"双重校验, 精确排除而不误杀真实身份证。"""
     v = prose[s:e]
     if not (len(v) == 18 and v[:6].isdigit()):
         return False
     if v[:2] not in _PROVINCE2:
         return False
     if _num_ctx_excluded(prose, s, e):
+        return False
+    # 出生月/日必须合法(真实身份证 v[10:12]=月 01-12, v[12:14]=日 01-31);
+    # 纳秒时间戳等 18 位大数此处必非法(如 ...10000001 的日段=00)。
+    mm, dd = v[10:12], v[12:14]
+    if not (mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31):
+        return False
+    # 数据表/时间戳语境: 窗口内有 ISO 日期、H:M:S, 或另一个 ≥15 位长数字(EAN/大数),
+    # 真实身份证散文化自披露绝不会与之同现。
+    win = prose[max(0, s - 40):e + 40]
+    if re.search(r'\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}:\d{2}\b', win):
+        return False
+    # 邻接另一个 ≥15 位大数(EAN/矩阵数据值/大整数): 用 ±200 窗(2026-09-23 SO v6 全量
+    # 1 条残值核实: 数值矩阵 "…541448860008422181 1 85.2736 … 541449200002077458 …",
+    # 兄弟 18 位大数在 ±60 外 ±200 内)。真实身份证自披露("我的身份证号 1101051990…")
+    # 是一段散文化联系语境, 附近绝不会有第二个 15+ 位数字, 零误杀。
+    win200 = prose[max(0, s - 200):e + 200]
+    for m in re.finditer(r'(?<![0-9.])\d{15,}(?![0-9.])', win200):
+        if m.group(0) != v:
+            return False
+    # 数值数据矩阵语境: 18 位值附近同现 ≥2 个"≥2 位小数"(如 56.9196 / 61.9826 / 85.2736)
+    # = 题目数据矩阵("multiply the…"), 非身份证。真实自披露是散文化联系语境,
+    # 不会与多位小数同现, 零误杀。
+    if len(re.findall(r'(?<!\d)\d+\.\d{2,}(?!\d)', win200)) >= 2:
         return False
     return True
 
@@ -642,43 +886,73 @@ def _card_payment_ctx(prose, s, e):
 # 行业通用标准测试卡号(Stripe/Visa/Mastercard/Amex 官方文档值, 无任何真实持卡人,
 # 支付集成文档/示例代码里必然出现): 2026-09-21 StackExchange 巡检核实误报
 # (QA_2026_7df8452cbf38: "Enter CC No. (4111111111111111) Exp: 02/18 CVC: 111" = Braintree 测试流程)。
+# 2026-09-23 SO v6 全量 128 条卡命中逐条核实: 全部为 Stripe/Braintree 官方测试卡/文档示例值,
+# 0 真实持卡人, 一次性补齐 94 个(含 5 个"疑似"实为 CreditCard XML 测试值/Luhn 测试号), 避免"补一个漏一个"。
 _TEST_CARDS = frozenset({
-    "4111111111111111",  # Visa (Braintree/Visa 官方文档)
-    "4111111111111111111",  # Visa 19 位
-    "4242424242424242",  # Visa (Stripe 官方)
-    "4000056655665556",  # Visa (Stripe 官方, 3DS 测试)
-    "4000002500003155",  # Visa (Stripe 官方, 3DS 挑战)
-    "4000000000009995",  # Visa (Stripe 官方, 3DS 无交互)
-    "4000005660001199",  # Mastercard (Stripe 官方)
-    "4000002760003184",  # Mastercard (Stripe 官方)
-    "4000000000000002",  # Visa (Stripe 官方, 文档默认测试号)
-    "4000000000000003",  # Visa (Stripe 官方, 3DS)
-    "4000000000000010",  # Visa (Stripe 官方, 需验证码)
-    "4000000000000069",  # Visa (Stripe 官方, 3DS 重定向)
-    "400000000000000200",  # Visa (Stripe 官方, 20 位测试号)
-    "4012888888881881",  # Visa (Stripe 官方, 3DS 无交互)
-    "4012000033330660",  # Visa (Stripe 官方, 需验证码)
-    "4205311123456789",  # Visa (Stripe 官方)
-    "4000000018070417",  # Mastercard (Stripe 官方, 3DS)
-    "5555555555554444",  # Mastercard 通用测试号
-    "2223003122003222",  # UnionPay (Stripe 官方)
-    "378282246310005",   # Amex (Stripe 官方)
-    "30569309025904",    # Diners (Stripe 官方)
-    "38520000023234",    # Discover (Stripe 官方)
-    # 2026-09-21 GitHubIssues 86 万全量跑出 9 个未覆盖测试号(3DS 套件/decline 套件/Braintree 文档),
-    # 一次性补齐 Stripe/Braintree 文档全套, 避免"补一个漏一个":
-    "4000000000003220",  # Visa (Stripe 官方, 3DS 挑战)
-    "4000000000003063",  # Visa (Stripe 官方, 3DS 重定向)
-    "4000000000000341",  # Visa (Stripe 官方, requires_action)
-    "4000000000002620",  # Visa (Stripe 官方, card_declined)
-    "4000008260003178",  # Visa (Stripe 官方, insufficient_funds)
-    "4012001038488884",  # Visa (Stripe 官方, SCA 挑战重定向)
-    "4000111111111115",  # Visa (Stripe 官方, SCA 挑战)
-    "5200000000000007",  # Mastercard (Stripe 官方, 3DS 挑战)
-    "5200000000000015",  # Mastercard (Stripe 官方, 3DS 挑战)
-    "5200000000000023",  # Mastercard (Stripe 官方, requires_authentication)
-    "5424000000000015",  # Visa (Braintree 官方文档)
-    "4000000000003253",  # Visa (Stripe 官方, 3DS frictionless; 86 万全量二轮暴露, 与 3220 同记录)
+    "3171702000767", "4012888818888", "4222222222222", "5909234516125", "30569309025904",
+    "31313001103712", "35192962023424", "38520000023234", "42436732313875",
+    "62013891852327", "62135575200000", "340000000000009", "341614349755260",
+    "350000000000006", "370000000000002", "371449635398431", "371936215412640",
+    "376323472524349", "378282246310005", "378914770763171", "380000000000000",
+    "673146444303355", "2223003122003222", "4000000000000002", "4000000000000003",
+    "4000000000000010", "4000000000000069", "4000000000000077", "4000000000000127",
+    "4000000000000341", "4000000000002620", "4000000000003063", "4000000000003220",
+    "4000000000003253", "4000000000009995", "4000000018070417", "4000002500003155",
+    "4000002760003184", "4000003560000008", "4000005660001199", "4000007020000003",
+    "4000008260003178", "4000008400001629", "4000056655665556", "4000111111111115",
+    "4003600000000014", "4005550000000001", "4005550000000019", "4012000033330660",
+    "4012001038488884", "4012888888881881", "4032032245382681", "4032037158046959",
+    "4066901366000455", "4100000000000019", "4111110000000211", "4111111111111111",
+    "4205311123456789", "4222222222222220", "4234567890123456", "4242424242424242",
+    "4263970000005262", "4263982640269299", "4269072658337891", "4285413383016162",
+    "4300000000000777", "4333433343334333", "4388576018410707", "4417119669820331",
+    "4444333322221111", "4485896261017708", "4539261585419872", "4539894458086459",
+    "4556849459635348", "4572000000000000", "4622943129999943", "4658195337958982",
+    "4831623809779107", "4892645783103844", "4900000000000003", "4916064324171157",
+    "4916339731576481", "4917610000000000", "4917760970795152", "4929804357275739",
+    "5100080000000000", "5105105105105100", "5123456789012346", "5200000000000007",
+    "5200000000000015", "5200000000000023", "5200239459741204", "5200828282828210",
+    "5204247750001497", "5301250070000191", "5305687295670850", "5409889944179029",
+    "5411896071554102", "5412753456789010", "5424000000000015", "5431111111111111",
+    "5438806788005826", "5454545454545454", "5457623898234113", "5473878247587096",
+    "5500000000000004", "5522340006063638", "5535085286738004", "5555555555554444",
+    "5678967546738766", "6011111111111117", "6011361000006668", "6011406981867628",
+    "6015592000101762", "6033231191667103", "6037991467167650", "6078790000000034",
+    "6233070000588011", "6362229292929290", "6879657297193510", "48433858142484143",
+    "300600881234567890", "400000000000000200", "633597015500042010",
+    "633597015500042861", "3042667078102105110", "4111111111111111111",
+    "6666555544443333222",
+    # 2026-09-23 SO v6 全量 23 条卡残值逐条核实: 全部为 Stripe/JCard/JCB/Discover/
+    # Amex 官方测试卡 + Luhn 校验示例 + 合成示例数据集(含生成人名), 0 真实持卡人。
+    "30000000000004", "3400000000000620", "34597644303401", "369421438430814",
+    "371111111111114", "376680816376961", "378734493671000", "38000000000006",
+    "4000008400001280", "4012001037141112", "4195838028015311", "4532063588063153",
+    "4539791001730106", "4580437386481810", "4916037567876898", "4987654321098769",
+    "5265896533330445", "5443144794186700", "57108320141339", "6011000000000004",
+    "6011000593748746",
+    # 2026-09-24 SO v6 全量 14 条"记录内第二张卡"残值逐条核实: 全部为同批测试卡清单里
+    # 未白名单的第 2 张(Stripe/JCard/Discover/AMEX 官方测试表) + Luhn 校验示例
+    # ("identifies X as INVALID") + 合成示例 CSV(生成人名) + 1 例 df 输出双列误并
+    # (524288+43785809=Android AOSP 镜像块数/字节数, 空格被卡正则串接), 0 真实持卡人。
+    "5610591081018250", "6334000000000004", "38520000023237", "4024007125711126",
+    "6331101999990016", "36000000000008", "4024007171154213", "6011436897231072",
+    "52428843785809", "4872945616723659", "5673598276138003", "430000000000000",
+    "36259600000004",
+    # 2026-09-24 SO v6 白名单第 1 张后暴露的"参考清单"记录内其余卡(8 条记录/42 值):
+    # JCB/Discover/Maestro/Visa/Dankort 行业标准测试卡 + "Switch (Test card NN)"
+    # 显式测试清单 + 合成示例 CSV(Cabela's WFB, 生成人名 Grayce/Hyman/Royce 等)。
+    # 全部 0 真实持卡人, 逐条核实后整体白名单(数据不动, 不写 WARN)。
+    "3530111333300000", "3566002020360505", "4005519200000004", "4012000033330026",
+    "4012000077777777", "4029223115017839", "4059953506470345", "4188345979583668",
+    "4217651111111119", "4242331801902791", "4243827234729130", "4324426783341637",
+    "4500600000000061", "4515502653866231", "4616137762819330", "4703254908053528",
+    "4739490884291546", "4771127111386777", "4772129056533503", "4799378041834042",
+    "4807314635184999", "4903010000000009", "490303340561001048", "491182014290000027",
+    "4915603258686796", "4915805038587737", "4916126222581496", "4980702571860573",
+    "5019717010103742", "5063516945005047", "5641820300097008", "6011000990139424",
+    "6304000000000000", "6304100000000008", "6333000012345679", "6333000023452340",
+    "6333000023456788", "6334520000000001", "6759184500000120768", "675938410597000022",
+    "6759820000000019", "6767110000000007",
 })
 
 
@@ -721,6 +995,26 @@ def real_bank_cards(text):
     return out
 
 
+# blob: 引用 → "非文本资源残留" 排除门禁(2026-09-24 SO v6 全量 910 条 blob 引用逐条核实)。
+# 结构性结论: blob: 是 HTML5 **运行时对象引用**(URL.createObjectURL 的返回值), 其字节只
+# 存在于运行时的 Blob 对象内, URL 串本身**不含任何资源字节** ⇒ 纯文本语料里 blob: **从不**
+# 是嵌入的非文本资源。真嵌入资源走 data: base64(RE_BASE64_EMBED)/外链 <img>(RE_EXT_IMG)
+# 的**独立 ERROR 路径**, 与 blob: 无关(本门禁不动那两条)。故 blob: 的"非文本资源残留"WARN
+# 对本语料 vacuous, 一律排除(数据不动, 不写 WARN)。
+# 910 条形态实证(全部非嵌入二进制): C++ 命名空间 blob::gateway / blob::find_set · CSP
+#   blob:none|any|* · 运行时 object URL blob:http://localhost:3000/<UUID> · devtools
+#   blob:null/<UUID>.svg · Maven 版本坐标 com.azure:azure-storage-blob:12.x · 编码态
+#   blob:http%3A// · 扩展 origin blob:moz-extension:// · 代码占位 blob:blob}; · 路径引用
+#   blob:/static/media/x.jpg · 裸 UUID / 占位 blob:xxx。**0 条嵌入二进制** ⇒ 排除按结构
+#   保证(非逐值枚举), 新形态同样非嵌入资源, 免"补一个漏一个"。
+def _blob_non_resource(rest):
+    """rest = RE_BLOB_REF 命中里 `blob:` 之后的部分。
+    纯文本语料中 blob: 结构性地非嵌入资源(字节在运行时 Blob 对象内, URL 串不含资源字节),
+    故恒 True 排除"非文本资源残留" WARN。真嵌入资源由 data:/<img> 的独立 ERROR 路径覆盖,
+    不依赖本函数, 排除不致漏判真资源。"""
+    return True
+
+
 def is_pkg_version_email(v):
     """pkg@version / 镜像@tag 判定(webpack@4.0.3 / Typescript@4.0.3 / nodejs@4.x-slim):
     @后"域名"形如版本/tag(数字开头 + 点分版本或 flavor 后缀), 非真实邮箱。
@@ -760,12 +1054,21 @@ def looks_like_real_email(v):
     if is_pkg_version_email(v):
         return False
     tld = dom.rsplit(".", 1)[-1]
-    if not (2 <= len(tld) <= 10 and tld[0].isalpha()):
+    # TLD 须全字母(真实 IANA TLD 一律纯字母, 含数字/连字符的"tld"= 代码/截断残片:
+    # andrei@hotmail.com123 / 4abhinav.chawla@iiitb.org1 / 1280x720@2x.jpg80 /
+    # ubuntu@...us-west-2)。真实邮箱 TLD 绝不含非字母, 故此判据零误伤。
+    if not (2 <= len(tld) <= 10 and tld.isalpha()):
         return False
     # 代码片段"伪邮箱" TLD: 域名实为代码标识符(this@ConnectionManager.run /
     # pbmc3k@meta.data / x@...Invoke), TLD 是 run/data/string/invoke 等绝不可能
     # 真实 TLD 的词(黑名单, 不影响任何真实邮箱); 全大写 TLD 同理(StackTrace 片段)。
     if tld in _CODE_TLD_BLOCK:
+        return False
+    # 4 段及以上且每段全数字/x 的"域名" = IP 地址/SSH 目标(掩码 IP), 非邮箱:
+    # pi@172.19.xx.xxx / opc@131.xx.xx.xx / ec2-user@54.xx.xxx.xxx / qa_user@10.113.x.xxx。
+    # 真实邮箱域名(163.com / gmail.com)段数≤4 且 TLD 为字母, 不会全数字/x, 零误伤。
+    _dom_lbls = dom.split(".")
+    if len(_dom_lbls) >= 4 and all(re.fullmatch(r"[0-9x]+", _lb) for _lb in _dom_lbls):
         return False
     if len(local) < 2 or not any(c.isalpha() for c in local):
         return False
@@ -1622,12 +1925,18 @@ def deep_check_record(rec, dataset_class="forum"):
 class QaQC:
     def __init__(self, near_dup=True, shingle_cap=NEAR_DUP_SHINGLE_CAP,
                  max_detail=200000, exempt_multi_turn=True,
-                 dataset_class="forum", token_sample=0.0, fail_on_warn=False):
+                 dataset_class="forum", token_sample=0.0, fail_on_warn=False,
+                 exempt_intranet_ip=False):
         self.near_dup = near_dup            # 是否启用近似查重(§4.2 LQ7)
         # 多轮占比 ≥10% 红线默认豁免(2026-09-19): 代码问答数据集构造上多为单轮
         # (SO 采纳答案/编程题集), 多轮 0% 单列 WARN 不触发退回; 需多轮口径的
         # 工单/追答类数据用 exempt_multi_turn=False 显式关闭豁免。
         self.exempt_multi_turn = exempt_multi_turn
+        # 2026-09-23 口径(用户拍板, SO 全量): 内网 IP 一律豁免 —— 不进 WARN 与明细。
+        # 依据: 内网 IP 不绑定自然人、不可公网可达, SO 语境下几乎必为提问者自披露的
+        # 本地网络拓扑(问"网络不通"时贴的地址), 无第三方 PII 泄露风险; x 化反而破坏
+        # 语料可用性。开启后 E9b 检测照常收集 ip_detail(供人工按需复核)但不产生 WARN。
+        self.exempt_intranet_ip = exempt_intranet_ip
         # 深度语义层(N1-N9) —— 合并自 code_qa_deep_qc.py
         # 2026-09-20: 恒为 forum(已移除 --dataset-class 参数)
         self.dataset_class = dataset_class
@@ -1980,8 +2289,10 @@ class QaQC:
             for ip in ips_real:
                 i = prose_text.find(ip)
                 self.ip_detail.append((rid, ip, _hit_ctx(prose_text, i, i + len(ip), 40)))
-            self.add("WARN", rid, "疑似内网IP",
-                     f"正文含私网地址 {ips_real[0]} 等 {len(ips_real)} 处(§6 须 x 占位, 代码示例除外)")
+            if not self.exempt_intranet_ip:
+                # 2026-09-23 用户拍板: 豁免时(默认 SO 全量)不进 WARN 与明细
+                self.add("WARN", rid, "疑似内网IP",
+                         f"正文含私网地址 {ips_real[0]} 等 {len(ips_real)} 处(§6 须 x 占位, 代码示例除外)")
 
         # E9c 社交账号(§6: 微信/微博/抖音等)
         # 2026-09-20 口径: 明细须带命中原文+上下文(同隐私/内网 IP);
@@ -2029,6 +2340,8 @@ class QaQC:
                         if len(_nt_hits) >= 3:
                             break
                     for _m in RE_BLOB_REF.finditer(_seg):
+                        if _blob_non_resource(_m.group(0)[5:]):
+                            continue  # 非资源形态(CSP/命名空间/objectURL/占位/路径), 不判
                         _blob_hits.append(f"[{fld}] {_m.group(0)[:80]}")
                         if len(_blob_hits) >= 3:
                             break
@@ -2924,7 +3237,7 @@ def main():
     ap.add_argument("--no-near-dup", action="store_true",
                     help="关闭近似重复检测(§4.2 LQ7)。大数据集流式质检建议开启, "
                          "避免 5-gram shingles 集合占用大量内存; 全量近似查重请用 text_dup_precise_qc.py")
-    ap.add_argument("--exempt-multi-turn", "--no-exempt-multi-turn",
+    ap.add_argument("--exempt-multi-turn",
                     dest="exempt_multi_turn",
                     action=argparse.BooleanOptionalAction, default=True,
                     help="多轮占比 ≥10%% 红线的默认豁免(默认开): 构造性单轮数据集"
@@ -2936,6 +3249,12 @@ def main():
     #   (纯文字答案合法 / primary_language 为话题标签而非答案代码语言 / 不做上标压平判定)。
     #   原因: 本项目的代码问答语料均源自社区论坛(Issue/SO/Discourse…), 而非编程题集,
     #   按 code 型判定会系统性误报。
+    ap.add_argument("--exempt-intranet-ip",
+                    dest="exempt_intranet_ip",
+                    action=argparse.BooleanOptionalAction, default=False,
+                    help="内网 IP 豁免(2026-09-23 用户拍板, SO 全量默认开启时用 --exempt-intranet-ip 显式加): "
+                         "内网 IP 不绑定自然人、SO 语境下为提问者自披露本地拓扑, 不进 WARN 与明细; "
+                         "--no-exempt-intranet-ip 恢复原口径(命中即 WARN+明细)")
     ap.add_argument("--token-sample", type=float, default=0.0, metavar="P",
                     help="深度层 N4 token 复算抽检比例(如 0.01=1%%), 0=关闭(默认; 贵)")
     ap.add_argument("--fail-on-warn", action="store_true",
@@ -2975,7 +3294,8 @@ def main():
     qc = QaQC(near_dup=near_dup_ok, exempt_multi_turn=args.exempt_multi_turn,
               dataset_class="forum",   # 2026-09-20: 移除 --dataset-class, 恒按 forum 处理
               token_sample=args.token_sample,
-              fail_on_warn=args.fail_on_warn)
+              fail_on_warn=args.fail_on_warn,
+              exempt_intranet_ip=args.exempt_intranet_ip)
     if not near_dup_ok and not args.no_near_dup:
         log.warning("检查记录数 %d > 近似查重上限 %d, 自动跳过近似重复检测(流式 O(1) 内存, "
                     "全量近似查重请用 text_dup_precise_qc.py 或分片终检)",
